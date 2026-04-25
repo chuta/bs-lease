@@ -314,7 +314,7 @@ export default function PublicEoi() {
                   <input
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
                     {...register("fullName")}
-                    placeholder="e.g., Chimezie Chuta"
+                    placeholder="e.g., John Okafor"
                   />
                   {fieldError(errors.fullName?.message)}
                 </div>

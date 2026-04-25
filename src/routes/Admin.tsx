@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-import { formatMoney, type Money } from "../data/lineItems";
+import { formatMoney, lineItems as canonicalLineItems, type Money } from "../data/lineItems";
 import {
   addNote,
   createSignedUrl,
@@ -39,6 +39,26 @@ function koboFromNairaString(value: string): number {
 
 function nairaStringFromKobo(kobo: number): string {
   return (kobo / 100).toFixed(2);
+}
+
+/** Ensures every canonical public line item exists in admin state (and can be saved to DB). */
+function mergeCanonicalLineItems(rows: DbLineItem[]): DbLineItem[] {
+  const byId = new Map(rows.map((r) => [r.id, { ...r }]));
+  let maxSort = rows.reduce((m, r) => Math.max(m, r.sort_order ?? 0), 0);
+  for (const li of canonicalLineItems) {
+    if (byId.has(li.id)) continue;
+    maxSort += 10;
+    byId.set(li.id, {
+      id: li.id,
+      label: li.label,
+      description: li.description ?? null,
+      price_kobo: li.price.amountKobo,
+      default_checked: Boolean(li.defaultChecked),
+      active: true,
+      sort_order: maxSort,
+    });
+  }
+  return Array.from(byId.values()).sort((a, b) => a.sort_order - b.sort_order);
 }
 
 function Banner({ title, children }: { title: string; children: React.ReactNode }) {
@@ -146,7 +166,7 @@ export default function Admin() {
       const pr = pricingRows[0] as DbPricingConfig;
       setPricing(pr);
       setBaseRentInput(nairaStringFromKobo(Number(pr.base_rent_kobo ?? 0)));
-      setLineItems((itemsRows ?? []) as DbLineItem[]);
+      setLineItems(mergeCanonicalLineItems((itemsRows ?? []) as DbLineItem[]));
     } finally {
       setBusy(false);
     }

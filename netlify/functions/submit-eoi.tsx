@@ -4,6 +4,7 @@ import Busboy from "busboy";
 import { Resend } from "resend";
 import { pdf, Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
 import { createClient } from "@supabase/supabase-js";
+import { lineItems as canonicalLineItems } from "../../src/data/lineItems";
 
 type UploadFile = {
   filename: string;
@@ -447,6 +448,15 @@ export const handler: Handler = async (event) => {
         label: r.label,
         description: r.description ?? null,
         price_kobo: Number(r.price_kobo ?? 0),
+      });
+    }
+    for (const li of canonicalLineItems) {
+      if (itemMap.has(li.id)) continue;
+      itemMap.set(li.id, {
+        id: li.id,
+        label: li.label,
+        description: li.description ?? null,
+        price_kobo: Number(li.price.amountKobo ?? 0),
       });
     }
 

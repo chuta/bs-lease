@@ -58,8 +58,20 @@ values
   ('facility_solar_power', 'Solar power (stable electricity)', null, 0, true, true, 50),
   ('facility_starlink_internet', 'High-speed Starlink Internet', null, 0, true, true, 60),
   ('facility_security', 'Security', null, 0, true, true, 70),
-  ('agency_agreement_fee', 'Agency & Agreement Fee', 'Optional fee for agency and agreement processing.', 0, false, true, 80)
+  ('agency_agreement_fee', 'Agency & Agreement Fee', 'Optional fee for agency and agreement processing.', 0, false, true, 80),
+  (
+    'caution_fee',
+    'Caution Fee',
+    'Refundable caution deposit if no damage occurs during your occupancy of the facility.',
+    0,
+    true,
+    true,
+    90
+  )
 on conflict (id) do nothing;
+
+-- If you already applied this schema before `caution_fee` existed, run the insert above
+-- as a one-off (same values + on conflict do nothing) in the SQL editor to add the row.
 
 -- RLS
 alter table public.pricing_config enable row level security;

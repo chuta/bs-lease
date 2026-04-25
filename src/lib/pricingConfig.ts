@@ -53,13 +53,19 @@ export async function fetchPricingConfig(): Promise<PricingConfig> {
     amountKobo: Number(pricing.base_rent_kobo ?? 0),
   };
 
-  const lineItems: LineItem[] = (itemsRows as unknown as DbLineItemRow[]).map((r) => ({
+  const dbRows = (itemsRows as unknown as DbLineItemRow[])
+    .slice()
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const dbIds = new Set(dbRows.map((r) => r.id));
+  const fromDb: LineItem[] = dbRows.map((r) => ({
     id: r.id,
     label: r.label,
     description: r.description ?? undefined,
     price: { currency: dbCurrency as "NGN", amountKobo: Number(r.price_kobo ?? 0) },
     defaultChecked: Boolean(r.default_checked),
   }));
+  const missingCanonical = fallbackLineItems.filter((li) => !dbIds.has(li.id));
+  const lineItems = [...fromDb, ...missingCanonical];
 
   return { baseRent, lineItems };
 }
