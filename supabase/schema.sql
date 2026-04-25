@@ -1,0 +1,233 @@
+-- BlockSpace EOI Leasing App (Supabase schema + RLS)
+-- Paste into Supabase SQL editor for project: crbbkgwpnhyqefgbbupp
+
+-- 1) pricing_config (single row)
+create table if not exists public.pricing_config (
+  id uuid primary key default gen_random_uuid(),
+  currency text not null default 'NGN',
+  base_rent_kobo bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+-- Ensure only one row is used (optional convention):
+-- We'll keep multiple rows possible but the app will read the most-recent updated row.
+
+-- 2) line_items
+create table if not exists public.line_items (
+  id text primary key,
+  label text not null,
+  description text null,
+  price_kobo bigint not null default 0,
+  default_checked boolean not null default false,
+  active boolean not null default true,
+  sort_order int not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+-- updated_at triggers
+create or replace function public.set_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists pricing_config_set_updated_at on public.pricing_config;
+create trigger pricing_config_set_updated_at
+before update on public.pricing_config
+for each row execute function public.set_updated_at();
+
+drop trigger if exists line_items_set_updated_at on public.line_items;
+create trigger line_items_set_updated_at
+before update on public.line_items
+for each row execute function public.set_updated_at();
+
+-- Seed base config if empty
+insert into public.pricing_config (currency, base_rent_kobo)
+select 'NGN', 0
+where not exists (select 1 from public.pricing_config);
+
+-- Seed line items (matches current src/data/lineItems.ts defaults)
+insert into public.line_items (id, label, description, price_kobo, default_checked, active, sort_order)
+values
+  ('furnish_bed_mattress', '6x4 bed & mattress (pre-furnished)', 'Included in the apartment furnishings.', 0, true, true, 10),
+  ('furnish_reading_table_chair', 'Reading table & chair (pre-furnished)', 'Included in the apartment furnishings.', 0, true, true, 20),
+  ('furnish_sofas', '2 seating room sofas (pre-furnished)', 'Included in the apartment furnishings.', 0, true, true, 30),
+  ('furnish_center_rug', 'Center rug (pre-furnished)', 'Included in the apartment furnishings.', 0, true, true, 40),
+  ('facility_solar_power', 'Solar power (stable electricity)', null, 0, true, true, 50),
+  ('facility_starlink_internet', 'High-speed Starlink Internet', null, 0, true, true, 60),
+  ('facility_security', 'Security', null, 0, true, true, 70)
+on conflict (id) do nothing;
+
+-- RLS
+alter table public.pricing_config enable row level security;
+alter table public.line_items enable row level security;
+
+-- Public read (anon + authenticated)
+drop policy if exists "pricing_config_read_all" on public.pricing_config;
+create policy "pricing_config_read_all"
+on public.pricing_config
+for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "line_items_read_all" on public.line_items;
+create policy "line_items_read_all"
+on public.line_items
+for select
+to anon, authenticated
+using (true);
+
+-- Authenticated write (assumes only admins have credentials)
+drop policy if exists "pricing_config_write_auth" on public.pricing_config;
+create policy "pricing_config_write_auth"
+on public.pricing_config
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "pricing_config_update_auth" on public.pricing_config;
+create policy "pricing_config_update_auth"
+on public.pricing_config
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "line_items_write_auth" on public.line_items;
+create policy "line_items_write_auth"
+on public.line_items
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "line_items_update_auth" on public.line_items;
+create policy "line_items_update_auth"
+on public.line_items
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "line_items_delete_auth" on public.line_items;
+create policy "line_items_delete_auth"
+on public.line_items
+for delete
+to authenticated
+using (true);
+
+-- 3) EOI submissions (stored for admin dashboard review)
+create table if not exists public.eoi_submissions (
+  id uuid primary key default gen_random_uuid(),
+  reference_id text not null unique,
+  created_at timestamptz not null default now(),
+  status text not null default 'Pending',
+
+  -- Applicant fields
+  full_name text not null,
+  date_of_birth date not null,
+  gender text not null,
+  religion text not null,
+  state_of_origin text not null,
+  current_address text not null,
+  phone_number text not null,
+  whatsapp_number text null,
+  email text not null,
+  occupation text not null,
+  industry text not null,
+  nin text not null,
+  facebook_handle text not null,
+  x_handle text not null,
+  instagram_handle text not null,
+  linkedin_handle text not null,
+
+  -- Apartment preference
+  preferred_unit text not null,
+  move_in_date date null,
+  lease_duration_months int not null,
+
+  -- Screening
+  convicted_crime boolean not null,
+  ongoing_court_case boolean not null,
+  staying_alone boolean not null,
+  married boolean not null,
+  number_of_children int not null,
+  drug_addiction boolean not null,
+
+  -- Agent
+  estate_agent text not null,
+
+  -- Pricing snapshot
+  currency text not null default 'NGN',
+  base_rent_kobo bigint not null,
+  options_kobo bigint not null,
+  total_kobo bigint not null,
+  selected_line_items jsonb not null,
+
+  -- Storage object paths
+  passport_object_path text not null,
+  nin_object_path text not null,
+  pdf_object_path text not null,
+
+  constraint eoi_status_check check (status in ('Pending','Processing','Accepted','Rejected')),
+  constraint eoi_children_check check (number_of_children >= 0),
+  constraint eoi_duration_check check (lease_duration_months > 0),
+  constraint eoi_selected_line_items_check check (jsonb_typeof(selected_line_items) = 'array')
+);
+
+create index if not exists eoi_submissions_status_idx on public.eoi_submissions(status);
+create index if not exists eoi_submissions_created_at_idx on public.eoi_submissions(created_at desc);
+create index if not exists eoi_submissions_email_idx on public.eoi_submissions(email);
+
+-- Notes (internal)
+create table if not exists public.eoi_notes (
+  id uuid primary key default gen_random_uuid(),
+  submission_id uuid not null references public.eoi_submissions(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  created_by uuid null,
+  note text not null
+);
+
+create index if not exists eoi_notes_submission_idx on public.eoi_notes(submission_id, created_at desc);
+
+-- Storage bucket (private) for uploads + PDFs
+-- Note: requires the `storage` schema to exist (default in Supabase).
+insert into storage.buckets (id, name, public)
+values ('eoi-uploads', 'eoi-uploads', false)
+on conflict (id) do nothing;
+
+-- RLS for submissions + notes
+alter table public.eoi_submissions enable row level security;
+alter table public.eoi_notes enable row level security;
+
+-- Disallow client-side insert/delete (Netlify function uses service role).
+drop policy if exists "eoi_submissions_select_auth" on public.eoi_submissions;
+create policy "eoi_submissions_select_auth"
+on public.eoi_submissions
+for select
+to authenticated
+using (true);
+
+drop policy if exists "eoi_submissions_update_auth" on public.eoi_submissions;
+create policy "eoi_submissions_update_auth"
+on public.eoi_submissions
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "eoi_notes_select_auth" on public.eoi_notes;
+create policy "eoi_notes_select_auth"
+on public.eoi_notes
+for select
+to authenticated
+using (true);
+
+drop policy if exists "eoi_notes_insert_auth" on public.eoi_notes;
+create policy "eoi_notes_insert_auth"
+on public.eoi_notes
+for insert
+to authenticated
+with check (true);
+
