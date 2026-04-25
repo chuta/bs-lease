@@ -72,6 +72,14 @@ export const lineItems: LineItem[] = [
     price: { currency, amountKobo: 0 },
     defaultChecked: false,
   },
+  {
+    id: "caution_fee",
+    label: "Caution Fee",
+    description:
+      "Refundable caution deposit if no damage occurs during your occupancy of the facility.",
+    price: { currency, amountKobo: 0 },
+    defaultChecked: true,
+  },
 ];
 
 export function formatMoney(m: Money): string {
