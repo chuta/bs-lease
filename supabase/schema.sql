@@ -57,7 +57,8 @@ values
   ('furnish_center_rug', 'Center rug (pre-furnished)', 'Included in the apartment furnishings.', 0, true, true, 40),
   ('facility_solar_power', 'Solar power (stable electricity)', null, 0, true, true, 50),
   ('facility_starlink_internet', 'High-speed Starlink Internet', null, 0, true, true, 60),
-  ('facility_security', 'Security', null, 0, true, true, 70)
+  ('facility_security', 'Security', null, 0, true, true, 70),
+  ('agency_agreement_fee', 'Agency & Agreement Fee', 'Optional fee for agency and agreement processing.', 0, false, true, 80)
 on conflict (id) do nothing;
 
 -- RLS

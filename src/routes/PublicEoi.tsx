@@ -285,6 +285,14 @@ export default function PublicEoi() {
           <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 md:text-4xl">
             Lease Agreement – Expression of Interest
           </h1>
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <img
+              src="/Untitled.jpg"
+              alt="BlockSpace property"
+              className="h-48 w-full object-cover md:h-72"
+              loading="eager"
+            />
+          </div>
           <p className="mt-2 max-w-3xl text-sm text-slate-600 md:text-base">
             This is an <span className="font-semibold">interest-only</span> form and{" "}
             <span className="font-semibold">not a final agreement</span>. Your submission will
