@@ -288,7 +288,7 @@ export default function PublicEoi() {
           <p className="mt-2 max-w-3xl text-sm text-slate-600 md:text-base">
             This is an <span className="font-semibold">interest-only</span> form and{" "}
             <span className="font-semibold">not a final agreement</span>. Your submission will
-            generate a non-binding PDF copy for you and the property admin.
+            generate a non-binding PDF copy for you and the property admin. Property Location: 2 Oladele Makunjuola Obalodu Stret, Alagemo Yahweh, Igbe Lara Ikorodu, Lagos.
           </p>
         </header>
 

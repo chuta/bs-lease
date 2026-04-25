@@ -65,6 +65,13 @@ export const lineItems: LineItem[] = [
     price: { currency, amountKobo: 0 },
     defaultChecked: true,
   },
+  {
+    id: "agency_agreement_fee",
+    label: "Agency & Agreement Fee",
+    description: "Optional fee for agency and agreement processing.",
+    price: { currency, amountKobo: 0 },
+    defaultChecked: false,
+  },
 ];
 
 export function formatMoney(m: Money): string {
