@@ -469,7 +469,7 @@ export default function PublicEoi() {
               </p>
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Passport upload *</label>
+                  <label className="text-sm font-medium text-slate-700">Passport (Head shot) upload *</label>
                   <input
                     type="file"
                     accept=".pdf,.jpg,.jpeg,.png"
