@@ -82,13 +82,18 @@ const SIGNED_URL_TTL_SEC = 60 * 60 * 2;
 function IdImagePreview({
   label,
   url,
+  failed,
   onExpand,
 }: {
   label: string;
   url?: string;
+  failed?: boolean;
   onExpand: () => void;
 }) {
   const [broken, setBroken] = useState(false);
+  if (failed) {
+    return <p className="text-sm text-slate-600">Preview unavailable (signed URL failed).</p>;
+  }
   if (!url) return <p className="text-sm text-slate-500">Loading link…</p>;
   if (broken) {
     return (
@@ -158,6 +163,7 @@ export default function Admin() {
   const [newNote, setNewNote] = useState("");
   const [pdfBusy, setPdfBusy] = useState(false);
   const [imagePreview, setImagePreview] = useState<"passport" | "nin" | null>(null);
+  const [docSignFailed, setDocSignFailed] = useState(false);
   const [docLinks, setDocLinks] = useState<{
     pdf?: string;
     passport?: string;
@@ -272,19 +278,30 @@ export default function Admin() {
 
   async function openSubmission(row: EoiSubmissionRow) {
     setDocLinks(null);
+    setDocSignFailed(false);
     setImagePreview(null);
     setBusy(true);
+    setSaveMessage(null);
     try {
       const detail = await fetchSubmissionDetail(row.id);
       setSelectedSubmission(detail);
-      const [n, pdfUrl, passportUrl, ninUrl] = await Promise.all([
-        listNotes(detail.id),
-        createSignedUrl(detail.pdf_object_path, SIGNED_URL_TTL_SEC),
-        createSignedUrl(detail.passport_object_path, SIGNED_URL_TTL_SEC),
-        createSignedUrl(detail.nin_object_path, SIGNED_URL_TTL_SEC),
-      ]);
+      const n = await listNotes(detail.id);
       setNotes(n);
-      setDocLinks({ pdf: pdfUrl, passport: passportUrl, nin: ninUrl });
+      try {
+        const [pdfUrl, passportUrl, ninUrl] = await Promise.all([
+          createSignedUrl(detail.pdf_object_path, SIGNED_URL_TTL_SEC),
+          createSignedUrl(detail.passport_object_path, SIGNED_URL_TTL_SEC),
+          createSignedUrl(detail.nin_object_path, SIGNED_URL_TTL_SEC),
+        ]);
+        setDocLinks({ pdf: pdfUrl, passport: passportUrl, nin: ninUrl });
+      } catch (e) {
+        setDocLinks(null);
+        setDocSignFailed(true);
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        setSaveMessage(
+          `Document links could not be created (${msg}). In the Supabase SQL editor, run the policy "eoi_uploads_objects_select_authenticated" from supabase/schema.sql.`,
+        );
+      }
     } catch (e) {
       setSelectedSubmission(null);
       setSaveMessage(e instanceof Error ? e.message : "Failed to open submission.");
@@ -824,6 +841,10 @@ export default function Admin() {
                               >
                                 Open archived submission PDF
                               </a>
+                            ) : docSignFailed ? (
+                              <p className="mt-2 text-xs text-amber-900">
+                                Archived PDF link unavailable until storage access is fixed.
+                              </p>
                             ) : null}
                           </div>
                           <div className="border-t border-slate-100 pt-4">
@@ -832,6 +853,7 @@ export default function Admin() {
                               <IdImagePreview
                                 label="passport"
                                 url={docLinks?.passport}
+                                failed={docSignFailed}
                                 onExpand={() => setImagePreview("passport")}
                               />
                             </div>
@@ -842,6 +864,7 @@ export default function Admin() {
                               <IdImagePreview
                                 label="NIN"
                                 url={docLinks?.nin}
+                                failed={docSignFailed}
                                 onExpand={() => setImagePreview("nin")}
                               />
                             </div>

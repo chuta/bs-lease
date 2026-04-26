@@ -137,11 +137,22 @@ export async function addNote(submissionId: string, note: string) {
   if (error) throw error;
 }
 
+const EOI_UPLOADS_BUCKET = "eoi-uploads";
+
+/** Path as stored in DB (e.g. passport/ref-file.jpg); strips accidental bucket prefix. */
+export function normalizeStorageObjectPath(objectPath: string): string {
+  let p = objectPath.trim().replace(/^\/+/, "");
+  const dup = `${EOI_UPLOADS_BUCKET}/`;
+  if (p.startsWith(dup)) p = p.slice(dup.length);
+  return p;
+}
+
 export async function createSignedUrl(objectPath: string, expiresInSeconds = 60 * 10) {
   if (!supabase) throw new Error("Supabase not configured");
+  const path = normalizeStorageObjectPath(objectPath);
   const { data, error } = await supabase.storage
-    .from("eoi-uploads")
-    .createSignedUrl(objectPath, expiresInSeconds);
+    .from(EOI_UPLOADS_BUCKET)
+    .createSignedUrl(path, expiresInSeconds);
   if (error) throw error;
   return data.signedUrl;
 }

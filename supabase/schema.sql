@@ -210,6 +210,15 @@ insert into storage.buckets (id, name, public)
 values ('eoi-uploads', 'eoi-uploads', false)
 on conflict (id) do nothing;
 
+-- Storage: signed URLs from the admin app use the logged-in user's JWT. Without a SELECT
+-- policy on storage.objects, createSignedUrl returns HTTP 400 and submission details break.
+drop policy if exists "eoi_uploads_objects_select_authenticated" on storage.objects;
+create policy "eoi_uploads_objects_select_authenticated"
+on storage.objects
+for select
+to authenticated
+using (bucket_id = 'eoi-uploads');
+
 -- RLS for submissions + notes
 alter table public.eoi_submissions enable row level security;
 alter table public.eoi_notes enable row level security;
