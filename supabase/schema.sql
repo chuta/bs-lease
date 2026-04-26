@@ -219,6 +219,81 @@ for select
 to authenticated
 using (bucket_id = 'eoi-uploads');
 
+-- Public listing gallery: anon may create signed URLs only for marketing images (not passport/nin/pdf).
+drop policy if exists "eoi_uploads_listing_gallery_select_public" on storage.objects;
+create policy "eoi_uploads_listing_gallery_select_public"
+on storage.objects
+for select
+to anon, authenticated
+using (bucket_id = 'eoi-uploads' and name like 'listing-gallery/%');
+
+-- Admin: upload / replace / delete listing images in the same bucket.
+drop policy if exists "eoi_uploads_listing_gallery_insert_auth" on storage.objects;
+create policy "eoi_uploads_listing_gallery_insert_auth"
+on storage.objects
+for insert
+to authenticated
+with check (bucket_id = 'eoi-uploads' and name like 'listing-gallery/%');
+
+drop policy if exists "eoi_uploads_listing_gallery_update_auth" on storage.objects;
+create policy "eoi_uploads_listing_gallery_update_auth"
+on storage.objects
+for update
+to authenticated
+using (bucket_id = 'eoi-uploads' and name like 'listing-gallery/%')
+with check (bucket_id = 'eoi-uploads' and name like 'listing-gallery/%');
+
+drop policy if exists "eoi_uploads_listing_gallery_delete_auth" on storage.objects;
+create policy "eoi_uploads_listing_gallery_delete_auth"
+on storage.objects
+for delete
+to authenticated
+using (bucket_id = 'eoi-uploads' and name like 'listing-gallery/%');
+
+-- Marketing photos for the public EOI landing page (paths in eoi-uploads bucket).
+create table if not exists public.listing_gallery_images (
+  id uuid primary key default gen_random_uuid(),
+  object_path text not null unique,
+  caption text not null default '',
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  constraint listing_gallery_path_prefix check (object_path like 'listing-gallery/%')
+);
+
+create index if not exists listing_gallery_images_sort_idx
+  on public.listing_gallery_images (sort_order asc, created_at asc);
+
+alter table public.listing_gallery_images enable row level security;
+
+drop policy if exists "listing_gallery_select_public" on public.listing_gallery_images;
+create policy "listing_gallery_select_public"
+on public.listing_gallery_images
+for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "listing_gallery_insert_auth" on public.listing_gallery_images;
+create policy "listing_gallery_insert_auth"
+on public.listing_gallery_images
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "listing_gallery_update_auth" on public.listing_gallery_images;
+create policy "listing_gallery_update_auth"
+on public.listing_gallery_images
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "listing_gallery_delete_auth" on public.listing_gallery_images;
+create policy "listing_gallery_delete_auth"
+on public.listing_gallery_images
+for delete
+to authenticated
+using (true);
+
 -- RLS for submissions + notes
 alter table public.eoi_submissions enable row level security;
 alter table public.eoi_notes enable row level security;
