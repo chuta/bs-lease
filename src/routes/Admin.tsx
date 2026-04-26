@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { formatMoney, lineItems as canonicalLineItems, type Money } from "../data/lineItems";
 import {
@@ -66,6 +66,14 @@ function mergeCanonicalLineItems(rows: DbLineItem[]): DbLineItem[] {
     });
   }
   return Array.from(byId.values()).sort((a, b) => a.sort_order - b.sort_order);
+}
+
+const CANONICAL_LINE_ITEM_IDS = new Set(canonicalLineItems.map((x) => x.id));
+
+function sanitizeLineItemId(raw: string): string {
+  let s = raw.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!s) s = "line_item";
+  return s.slice(0, 63);
 }
 
 function Banner({ title, children }: { title: string; children: React.ReactNode }) {
@@ -139,6 +147,125 @@ function IdImagePreview({
   );
 }
 
+function LineItemRow({
+  item,
+  isBuiltIn,
+  busy,
+  onPatch,
+  onRemove,
+  onRenameId,
+}: {
+  item: DbLineItem;
+  isBuiltIn: boolean;
+  busy: boolean;
+  onPatch: (id: string, patch: Partial<DbLineItem>) => void;
+  onRemove: (id: string) => void;
+  onRenameId: (oldId: string, rawNewId: string) => boolean;
+}) {
+  const [idDraft, setIdDraft] = useState(item.id);
+  useEffect(() => {
+    setIdDraft(item.id);
+  }, [item.id]);
+
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <div className="grid gap-3 md:grid-cols-6">
+        <div className="md:col-span-2">
+          <label className="text-xs font-semibold text-slate-600">ID</label>
+          <input
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-600"
+            value={idDraft}
+            disabled={isBuiltIn || busy}
+            onChange={(e) => setIdDraft(e.target.value)}
+            onBlur={() => {
+              if (isBuiltIn) return;
+              if (idDraft.trim() === item.id) return;
+              const ok = onRenameId(item.id, idDraft);
+              if (!ok) setIdDraft(item.id);
+            }}
+            spellCheck={false}
+          />
+          {isBuiltIn ? (
+            <p className="mt-1 text-[11px] text-slate-500">Built-in id (not editable).</p>
+          ) : (
+            <p className="mt-1 text-[11px] text-slate-500">Lowercase letters, numbers, underscores.</p>
+          )}
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs font-semibold text-slate-600">Label</label>
+          <input
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={item.label}
+            disabled={busy}
+            onChange={(e) => onPatch(item.id, { label: e.target.value })}
+          />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600">Price (kobo)</label>
+          <input
+            type="number"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={item.price_kobo}
+            disabled={busy}
+            onChange={(e) => onPatch(item.id, { price_kobo: Number(e.target.value) })}
+          />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600">Sort</label>
+          <input
+            type="number"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={item.sort_order}
+            disabled={busy}
+            onChange={(e) => onPatch(item.id, { sort_order: Number(e.target.value) })}
+          />
+        </div>
+        <div className="md:col-span-4">
+          <label className="text-xs font-semibold text-slate-600">Description</label>
+          <input
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={item.description ?? ""}
+            disabled={busy}
+            onChange={(e) => onPatch(item.id, { description: e.target.value || null })}
+          />
+        </div>
+        <div className="md:col-span-2 flex flex-wrap items-end justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-slate-900"
+                checked={item.active}
+                disabled={busy}
+                onChange={(e) => onPatch(item.id, { active: e.target.checked })}
+              />
+              Active
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-slate-900"
+                checked={item.default_checked}
+                disabled={busy}
+                onChange={(e) => onPatch(item.id, { default_checked: e.target.checked })}
+              />
+              Default checked
+            </label>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-800 hover:bg-red-50 disabled:opacity-60"
+            onClick={() => onRemove(item.id)}
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Admin() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -151,6 +278,8 @@ export default function Admin() {
   const [pricing, setPricing] = useState<DbPricingConfig | null>(null);
   const [baseRentInput, setBaseRentInput] = useState("");
   const [lineItems, setLineItems] = useState<DbLineItem[]>([]);
+  /** Line item ids present when config was last loaded or saved (used to DELETE removed rows on save). */
+  const idsAtLoadRef = useRef<Set<string>>(new Set());
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const [submissions, setSubmissions] = useState<EoiSubmissionRow[]>([]);
@@ -210,6 +339,7 @@ export default function Admin() {
     await supabase.auth.signOut();
     setPricing(null);
     setLineItems([]);
+    idsAtLoadRef.current = new Set();
     setBaseRentInput("");
   }
 
@@ -238,7 +368,9 @@ export default function Admin() {
       const pr = pricingRows[0] as DbPricingConfig;
       setPricing(pr);
       setBaseRentInput(nairaStringFromKobo(Number(pr.base_rent_kobo ?? 0)));
-      setLineItems(mergeCanonicalLineItems((itemsRows ?? []) as DbLineItem[]));
+      const merged = mergeCanonicalLineItems((itemsRows ?? []) as DbLineItem[]);
+      setLineItems(merged);
+      idsAtLoadRef.current = new Set(merged.map((r) => r.id));
     } finally {
       setBusy(false);
     }
@@ -388,22 +520,34 @@ export default function Admin() {
         .eq("id", pricing.id);
       if (upErr) throw upErr;
 
-      // Upsert each line item (simple, explicit)
+      const seen = new Set<string>();
       for (const li of lineItems) {
-        const { error } = await supabase
-          .from("line_items")
-          .upsert({
-            id: li.id,
-            label: li.label,
-            description: li.description,
-            price_kobo: Number(li.price_kobo ?? 0),
-            default_checked: Boolean(li.default_checked),
-            active: Boolean(li.active),
-            sort_order: Number(li.sort_order ?? 0),
-          })
-          .eq("id", li.id);
-        if (error) throw error;
+        if (seen.has(li.id)) throw new Error(`Duplicate line item id: ${li.id}`);
+        seen.add(li.id);
       }
+
+      const currentIds = new Set(lineItems.map((r) => r.id));
+      const toDelete = [...idsAtLoadRef.current].filter((id) => !currentIds.has(id));
+      if (toDelete.length > 0) {
+        const { error: delErr } = await supabase.from("line_items").delete().in("id", toDelete);
+        if (delErr) throw delErr;
+      }
+
+      const rows = lineItems.map((li) => ({
+        id: li.id,
+        label: li.label,
+        description: li.description,
+        price_kobo: Number(li.price_kobo ?? 0),
+        default_checked: Boolean(li.default_checked),
+        active: Boolean(li.active),
+        sort_order: Number(li.sort_order ?? 0),
+      }));
+      if (rows.length > 0) {
+        const { error: liErr } = await supabase.from("line_items").upsert(rows, { onConflict: "id" });
+        if (liErr) throw liErr;
+      }
+
+      idsAtLoadRef.current = new Set(lineItems.map((r) => r.id));
 
       setSaveMessage("Saved. Public page updates immediately.");
     } catch (e) {
@@ -415,6 +559,32 @@ export default function Admin() {
 
   function updateLineItem(id: string, patch: Partial<DbLineItem>) {
     setLineItems((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  }
+
+  function replaceLineItemId(oldId: string, rawNewId: string): boolean {
+    const slug = sanitizeLineItemId(rawNewId);
+    if (slug === oldId) return true;
+    if (CANONICAL_LINE_ITEM_IDS.has(slug)) {
+      setSaveMessage("That id is reserved for a built-in line item.");
+      return false;
+    }
+    if (lineItems.some((x) => x.id === slug && x.id !== oldId)) {
+      setSaveMessage("Another line item already uses that id.");
+      return false;
+    }
+    setLineItems((prev) => prev.map((x) => (x.id === oldId ? { ...x, id: slug } : x)));
+    setSaveMessage(null);
+    return true;
+  }
+
+  function removeLineItem(id: string) {
+    if (CANONICAL_LINE_ITEM_IDS.has(id)) {
+      const ok = window.confirm(
+        "Remove this built-in line item from pricing? It will disappear from the public form until you reload from Supabase or restore it manually.",
+      );
+      if (!ok) return;
+    }
+    setLineItems((prev) => prev.filter((x) => x.id !== id));
   }
 
   function addLineItem() {
@@ -431,6 +601,7 @@ export default function Admin() {
         sort_order: prev.length ? Math.max(...prev.map((p) => p.sort_order)) + 10 : 10,
       },
     ]);
+    setSaveMessage(null);
   }
 
   if (!supabase) {
@@ -567,100 +738,30 @@ export default function Admin() {
                   <div className="flex items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold text-slate-950">Line items</h2>
                     <button
+                      type="button"
                       className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-100"
                       onClick={addLineItem}
+                      disabled={busy}
                     >
-                      Add item
+                      Add line item
                     </button>
                   </div>
                   <p className="mt-1 text-sm text-slate-600">
-                    Configure labels, prices, defaults, active status, and sort order.
+                    Add, edit, or remove rows here, then <span className="font-semibold">Save changes</span> to
+                    update Supabase. Built-in ids cannot be renamed; custom rows can set a stable id before saving.
                   </p>
 
                   <div className="mt-4 space-y-3">
                     {lineItems.map((li) => (
-                      <div key={li.id} className="rounded-xl border border-slate-200 p-4">
-                        <div className="grid gap-3 md:grid-cols-6">
-                          <div className="md:col-span-2">
-                            <label className="text-xs font-semibold text-slate-600">ID</label>
-                            <input
-                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                              value={li.id}
-                              disabled
-                            />
-                          </div>
-                          <div className="md:col-span-2">
-                            <label className="text-xs font-semibold text-slate-600">Label</label>
-                            <input
-                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                              value={li.label}
-                              onChange={(e) => updateLineItem(li.id, { label: e.target.value })}
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs font-semibold text-slate-600">
-                              Price (kobo)
-                            </label>
-                            <input
-                              type="number"
-                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                              value={li.price_kobo}
-                              onChange={(e) =>
-                                updateLineItem(li.id, { price_kobo: Number(e.target.value) })
-                              }
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs font-semibold text-slate-600">Sort</label>
-                            <input
-                              type="number"
-                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                              value={li.sort_order}
-                              onChange={(e) =>
-                                updateLineItem(li.id, { sort_order: Number(e.target.value) })
-                              }
-                            />
-                          </div>
-                          <div className="md:col-span-4">
-                            <label className="text-xs font-semibold text-slate-600">
-                              Description
-                            </label>
-                            <input
-                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                              value={li.description ?? ""}
-                              onChange={(e) =>
-                                updateLineItem(li.id, { description: e.target.value || null })
-                              }
-                            />
-                          </div>
-                          <div className="md:col-span-2 flex items-end gap-4">
-                            <label className="flex items-center gap-2 text-sm">
-                              <input
-                                type="checkbox"
-                                className="h-4 w-4 accent-slate-900"
-                                checked={li.active}
-                                onChange={(e) =>
-                                  updateLineItem(li.id, { active: e.target.checked })
-                                }
-                              />
-                              Active
-                            </label>
-                            <label className="flex items-center gap-2 text-sm">
-                              <input
-                                type="checkbox"
-                                className="h-4 w-4 accent-slate-900"
-                                checked={li.default_checked}
-                                onChange={(e) =>
-                                  updateLineItem(li.id, {
-                                    default_checked: e.target.checked,
-                                  })
-                                }
-                              />
-                              Default checked
-                            </label>
-                          </div>
-                        </div>
-                      </div>
+                      <LineItemRow
+                        key={li.id}
+                        item={li}
+                        isBuiltIn={CANONICAL_LINE_ITEM_IDS.has(li.id)}
+                        busy={busy}
+                        onPatch={updateLineItem}
+                        onRemove={removeLineItem}
+                        onRenameId={replaceLineItemId}
+                      />
                     ))}
                   </div>
                 </div>
