@@ -2,11 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { formatMoney, lineItems as canonicalLineItems, type Money } from "../data/lineItems";
 import {
+  parseSelectedLineItemsForPdf,
+  submissionDetailToPdfData,
+  submissionDetailToPdfTotals,
+} from "../lib/eoiSubmissionPdfData";
+import {
   addNote,
   createSignedUrl,
+  fetchSubmissionDetail,
   listNotes,
   listSubmissions,
   type EoiNoteRow,
+  type EoiSubmissionDetail,
   type EoiSubmissionRow,
   type SubmissionStatus,
   updateSubmissionStatus,
@@ -70,6 +77,63 @@ function Banner({ title, children }: { title: string; children: React.ReactNode 
   );
 }
 
+const SIGNED_URL_TTL_SEC = 60 * 60 * 2;
+
+function IdImagePreview({
+  label,
+  url,
+  onExpand,
+}: {
+  label: string;
+  url?: string;
+  onExpand: () => void;
+}) {
+  const [broken, setBroken] = useState(false);
+  if (!url) return <p className="text-sm text-slate-500">Loading link…</p>;
+  if (broken) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-amber-900">
+          Preview not available (unsupported format or failed to load).
+        </p>
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sm font-semibold text-slate-900 underline"
+        >
+          Open {label} in new tab
+        </a>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={onExpand}
+        className="block w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-2 text-left hover:bg-slate-100"
+      >
+        <img
+          src={url}
+          alt={label}
+          className="mx-auto max-h-44 w-full object-contain"
+          onError={() => setBroken(true)}
+        />
+        <span className="mt-1 block text-center text-xs text-slate-600">Tap to enlarge</span>
+      </button>
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="text-xs font-semibold text-slate-700 underline"
+      >
+        Open in new tab
+      </a>
+    </div>
+  );
+}
+
 export default function Admin() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -89,9 +153,11 @@ export default function Admin() {
     "All",
   );
   const [submissionsQuery, setSubmissionsQuery] = useState("");
-  const [selectedSubmission, setSelectedSubmission] = useState<EoiSubmissionRow | null>(null);
+  const [selectedSubmission, setSelectedSubmission] = useState<EoiSubmissionDetail | null>(null);
   const [notes, setNotes] = useState<EoiNoteRow[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [imagePreview, setImagePreview] = useState<"passport" | "nin" | null>(null);
   const [docLinks, setDocLinks] = useState<{
     pdf?: string;
     passport?: string;
@@ -178,6 +244,15 @@ export default function Admin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionEmail]);
 
+  useEffect(() => {
+    if (!imagePreview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setImagePreview(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [imagePreview]);
+
   async function loadSubmissions() {
     setBusy(true);
     setSaveMessage(null);
@@ -196,22 +271,60 @@ export default function Admin() {
   }
 
   async function openSubmission(row: EoiSubmissionRow) {
-    setSelectedSubmission(row);
     setDocLinks(null);
+    setImagePreview(null);
     setBusy(true);
     try {
+      const detail = await fetchSubmissionDetail(row.id);
+      setSelectedSubmission(detail);
       const [n, pdfUrl, passportUrl, ninUrl] = await Promise.all([
-        listNotes(row.id),
-        createSignedUrl(row.pdf_object_path),
-        createSignedUrl(row.passport_object_path),
-        createSignedUrl(row.nin_object_path),
+        listNotes(detail.id),
+        createSignedUrl(detail.pdf_object_path, SIGNED_URL_TTL_SEC),
+        createSignedUrl(detail.passport_object_path, SIGNED_URL_TTL_SEC),
+        createSignedUrl(detail.nin_object_path, SIGNED_URL_TTL_SEC),
       ]);
       setNotes(n);
       setDocLinks({ pdf: pdfUrl, passport: passportUrl, nin: ninUrl });
     } catch (e) {
+      setSelectedSubmission(null);
       setSaveMessage(e instanceof Error ? e.message : "Failed to open submission.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function downloadSubmissionPdf() {
+    if (!selectedSubmission) return;
+    setPdfBusy(true);
+    setSaveMessage(null);
+    try {
+      const [{ pdf }, { EoiSubmissionPdf }] = await Promise.all([
+        import("@react-pdf/renderer"),
+        import("../pdf/EoiSubmissionPdf"),
+      ]);
+      const data = submissionDetailToPdfData(selectedSubmission);
+      const selectedLineItems = parseSelectedLineItemsForPdf(selectedSubmission.selected_line_items);
+      const totals = submissionDetailToPdfTotals(selectedSubmission);
+      const submittedAt = new Date(selectedSubmission.created_at).toISOString();
+      const blob = await pdf(
+        <EoiSubmissionPdf
+          referenceId={selectedSubmission.reference_id}
+          submittedAt={submittedAt}
+          data={data}
+          selectedLineItems={selectedLineItems}
+          totals={totals}
+        />,
+      ).toBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${selectedSubmission.reference_id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setSaveMessage(e instanceof Error ? e.message : "PDF generation failed.");
+    } finally {
+      setPdfBusy(false);
     }
   }
 
@@ -688,34 +801,55 @@ export default function Admin() {
 
                       <div className="rounded-xl border border-slate-200 p-4">
                         <div className="text-xs font-semibold text-slate-600">Documents</div>
-                        <div className="mt-3 grid gap-2">
-                          <a
-                            className="text-sm font-semibold text-slate-900 underline"
-                            href={docLinks?.pdf}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Download PDF
-                          </a>
-                          <a
-                            className="text-sm font-semibold text-slate-900 underline"
-                            href={docLinks?.passport}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            View Passport
-                          </a>
-                          <a
-                            className="text-sm font-semibold text-slate-900 underline"
-                            href={docLinks?.nin}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            View NIN
-                          </a>
+                        <div className="mt-3 space-y-4">
+                          <div>
+                            <p className="text-xs text-slate-600">EOI summary (regenerated from stored data)</p>
+                            <button
+                              type="button"
+                              disabled={pdfBusy || busy}
+                              className="mt-2 inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                              onClick={() => void downloadSubmissionPdf()}
+                            >
+                              {pdfBusy ? "Building PDF…" : "Download EOI PDF"}
+                            </button>
+                            <p className="mt-2 text-xs text-slate-500">
+                              Uses the same layout as the applicant submission (React PDF in the browser).
+                            </p>
+                            {docLinks?.pdf ? (
+                              <a
+                                className="mt-2 inline-block text-sm font-semibold text-slate-800 underline"
+                                href={docLinks.pdf}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Open archived submission PDF
+                              </a>
+                            ) : null}
+                          </div>
+                          <div className="border-t border-slate-100 pt-4">
+                            <p className="text-xs font-semibold text-slate-600">Passport</p>
+                            <div className="mt-2">
+                              <IdImagePreview
+                                label="passport"
+                                url={docLinks?.passport}
+                                onExpand={() => setImagePreview("passport")}
+                              />
+                            </div>
+                          </div>
+                          <div className="border-t border-slate-100 pt-4">
+                            <p className="text-xs font-semibold text-slate-600">NIN document</p>
+                            <div className="mt-2">
+                              <IdImagePreview
+                                label="NIN"
+                                url={docLinks?.nin}
+                                onExpand={() => setImagePreview("nin")}
+                              />
+                            </div>
+                          </div>
                         </div>
-                        <p className="mt-2 text-xs text-slate-600">
-                          Links are signed and expire automatically.
+                        <p className="mt-3 text-xs text-slate-600">
+                          Storage links are signed and expire after {SIGNED_URL_TTL_SEC / 3600} hours;
+                          re-open the submission if previews stop loading.
                         </p>
                       </div>
 
@@ -758,6 +892,33 @@ export default function Admin() {
           </>
         )}
       </div>
+
+      {imagePreview && docLinks?.[imagePreview] ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Document preview"
+          onClick={() => setImagePreview(null)}
+        >
+          <button
+            type="button"
+            className="absolute right-4 top-4 rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-slate-900 shadow-md hover:bg-slate-100"
+            onClick={(e) => {
+              e.stopPropagation();
+              setImagePreview(null);
+            }}
+          >
+            Close
+          </button>
+          <img
+            src={docLinks[imagePreview]}
+            alt={imagePreview === "passport" ? "Passport" : "NIN document"}
+            className="max-h-[min(90vh,920px)] max-w-full object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

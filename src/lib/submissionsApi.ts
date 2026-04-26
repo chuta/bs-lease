@@ -19,6 +19,48 @@ export type EoiSubmissionRow = {
   currency: string;
 };
 
+/** Full row for admin detail + PDF regeneration. */
+export type EoiSubmissionDetail = {
+  id: string;
+  reference_id: string;
+  created_at: string;
+  status: SubmissionStatus;
+  full_name: string;
+  date_of_birth: string;
+  gender: string;
+  religion: string;
+  state_of_origin: string;
+  current_address: string;
+  phone_number: string;
+  whatsapp_number: string | null;
+  email: string;
+  occupation: string;
+  industry: string;
+  nin: string;
+  facebook_handle: string;
+  x_handle: string;
+  instagram_handle: string;
+  linkedin_handle: string;
+  preferred_unit: string;
+  move_in_date: string | null;
+  lease_duration_months: number;
+  convicted_crime: boolean;
+  ongoing_court_case: boolean;
+  staying_alone: boolean;
+  married: boolean;
+  number_of_children: number;
+  drug_addiction: boolean;
+  estate_agent: string;
+  currency: string;
+  base_rent_kobo: number;
+  options_kobo: number;
+  total_kobo: number;
+  selected_line_items: unknown;
+  passport_object_path: string;
+  nin_object_path: string;
+  pdf_object_path: string;
+};
+
 export type EoiNoteRow = {
   id: string;
   submission_id: string;
@@ -56,6 +98,14 @@ export async function listSubmissions(params: {
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as EoiSubmissionRow[];
+}
+
+export async function fetchSubmissionDetail(id: string): Promise<EoiSubmissionDetail> {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase.from("eoi_submissions").select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Submission not found.");
+  return data as EoiSubmissionDetail;
 }
 
 export async function updateSubmissionStatus(id: string, status: SubmissionStatus) {
