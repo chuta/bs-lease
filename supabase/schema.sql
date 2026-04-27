@@ -24,6 +24,19 @@ create table if not exists public.line_items (
   updated_at timestamptz not null default now()
 );
 
+-- 2b) lease_duration_tiers (duration-based pricing multipliers)
+-- Multipliers are in basis points (10000 = 1.00x)
+create table if not exists public.lease_duration_tiers (
+  months int primary key,
+  label text not null,
+  multiplier_bps int not null default 10000,
+  active boolean not null default true,
+  sort_order int not null default 0,
+  updated_at timestamptz not null default now(),
+  constraint lease_duration_months_check check (months > 0),
+  constraint lease_duration_multiplier_bps_check check (multiplier_bps >= 0)
+);
+
 -- updated_at triggers
 create or replace function public.set_updated_at()
 returns trigger language plpgsql as $$
@@ -41,6 +54,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists line_items_set_updated_at on public.line_items;
 create trigger line_items_set_updated_at
 before update on public.line_items
+for each row execute function public.set_updated_at();
+
+drop trigger if exists lease_duration_tiers_set_updated_at on public.lease_duration_tiers;
+create trigger lease_duration_tiers_set_updated_at
+before update on public.lease_duration_tiers
 for each row execute function public.set_updated_at();
 
 -- Seed base config if empty
@@ -73,9 +91,20 @@ on conflict (id) do nothing;
 -- If you already applied this schema before `caution_fee` existed, run the insert above
 -- as a one-off (same values + on conflict do nothing) in the SQL editor to add the row.
 
+-- Seed lease duration tiers (defaults; admin can edit multipliers anytime)
+insert into public.lease_duration_tiers (months, label, multiplier_bps, active, sort_order)
+values
+  (1, '1 month', 14000, true, 10),
+  (3, '3 months', 12500, true, 20),
+  (6, '6 months', 11250, true, 30),
+  (12, '12 months', 10000, true, 40),
+  (24, '24 months', 9500, true, 50)
+on conflict (months) do nothing;
+
 -- RLS
 alter table public.pricing_config enable row level security;
 alter table public.line_items enable row level security;
+alter table public.lease_duration_tiers enable row level security;
 
 -- Public read (anon + authenticated)
 drop policy if exists "pricing_config_read_all" on public.pricing_config;
@@ -88,6 +117,13 @@ using (true);
 drop policy if exists "line_items_read_all" on public.line_items;
 create policy "line_items_read_all"
 on public.line_items
+for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "lease_duration_tiers_read_all" on public.lease_duration_tiers;
+create policy "lease_duration_tiers_read_all"
+on public.lease_duration_tiers
 for select
 to anon, authenticated
 using (true);
@@ -126,6 +162,28 @@ with check (true);
 drop policy if exists "line_items_delete_auth" on public.line_items;
 create policy "line_items_delete_auth"
 on public.line_items
+for delete
+to authenticated
+using (true);
+
+drop policy if exists "lease_duration_tiers_write_auth" on public.lease_duration_tiers;
+create policy "lease_duration_tiers_write_auth"
+on public.lease_duration_tiers
+for insert
+to authenticated
+with check (true);
+
+drop policy if exists "lease_duration_tiers_update_auth" on public.lease_duration_tiers;
+create policy "lease_duration_tiers_update_auth"
+on public.lease_duration_tiers
+for update
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "lease_duration_tiers_delete_auth" on public.lease_duration_tiers;
+create policy "lease_duration_tiers_delete_auth"
+on public.lease_duration_tiers
 for delete
 to authenticated
 using (true);
@@ -176,6 +234,7 @@ create table if not exists public.eoi_submissions (
   base_rent_kobo bigint not null,
   options_kobo bigint not null,
   total_kobo bigint not null,
+  duration_multiplier_bps int null,
   selected_line_items jsonb not null,
 
   -- Storage object paths
@@ -188,6 +247,9 @@ create table if not exists public.eoi_submissions (
   constraint eoi_duration_check check (lease_duration_months > 0),
   constraint eoi_selected_line_items_check check (jsonb_typeof(selected_line_items) = 'array')
 );
+
+alter table public.eoi_submissions
+  add column if not exists duration_multiplier_bps int null;
 
 create index if not exists eoi_submissions_status_idx on public.eoi_submissions(status);
 create index if not exists eoi_submissions_created_at_idx on public.eoi_submissions(created_at desc);

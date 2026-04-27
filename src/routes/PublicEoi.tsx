@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { estateAgents } from "../data/agents";
 import { formatMoney, type LineItem, type Money } from "../data/lineItems";
 import { fetchPricingConfig } from "../lib/pricingConfig";
 import { ListingImageCarousel } from "../components/ListingImageCarousel";
+import {
+  listLeaseDurationTiers,
+  scaleKoboAmountFrom12MonthPrice,
+  type LeaseDurationTier,
+} from "../lib/leaseDurationApi";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // 8MB
 const ACCEPTED_UPLOAD_TYPES = ["application/pdf", "image/jpeg", "image/png"] as const;
@@ -139,7 +144,7 @@ function YesNoRow({
 
 export default function PublicEoi() {
   const [config, setConfig] = useState<{ baseRent: Money; lineItems: LineItem[] } | null>(null);
-  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  const [durationTiers, setDurationTiers] = useState<LeaseDurationTier[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -150,13 +155,20 @@ export default function PublicEoi() {
       .catch(() => {
         // fetchPricingConfig already falls back; keep null until resolved.
       });
+    listLeaseDurationTiers()
+      .then((tiers) => {
+        if (!cancelled) setDurationTiers(tiers);
+      })
+      .catch(() => {
+        if (!cancelled) setDurationTiers([]);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
 
   const baseRent = config?.baseRent;
-  const lineItems = config?.lineItems ?? [];
+  const lineItems = useMemo(() => config?.lineItems ?? [], [config]);
 
   const defaultSelected = useMemo(() => {
     return lineItems.filter((i) => i.defaultChecked).map((i) => i.id);
@@ -166,8 +178,8 @@ export default function PublicEoi() {
     register,
     handleSubmit,
     setValue,
-    watch,
     formState: { errors, isSubmitting },
+    control,
   } = useForm<FormValues>({
     resolver: zodResolver(FormSchema) as unknown as never,
     defaultValues: {
@@ -208,31 +220,68 @@ export default function PublicEoi() {
   });
 
   useEffect(() => {
-    if (defaultsApplied) return;
     if (!config) return;
     setValue("selectedLineItemIds", defaultSelected, { shouldDirty: false });
-    setDefaultsApplied(true);
-  }, [config, defaultSelected, defaultsApplied, setValue]);
+  }, [config, defaultSelected, setValue]);
 
   const [submitResult, setSubmitResult] = useState<
     { ok: true; referenceId: string } | { ok: false; message: string } | null
   >(null);
 
-  const selectedLineItemIds = watch("selectedLineItemIds") ?? [];
-  const estateAgentId = watch("estateAgentId");
+  const watchedSelectedLineItemIds = useWatch({ control, name: "selectedLineItemIds" });
+  const selectedLineItemIds = useMemo(
+    () => watchedSelectedLineItemIds ?? [],
+    [watchedSelectedLineItemIds],
+  );
+  const leaseDurationMonthsRaw = useWatch({ control, name: "leaseDurationMonths" });
+  const estateAgentId = useWatch({ control, name: "estateAgentId" });
+
+  const leaseDurationMonths = useMemo(() => {
+    const n = Number(leaseDurationMonthsRaw ?? "12");
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 12;
+  }, [leaseDurationMonthsRaw]);
+
+  const selectedTier = useMemo(() => {
+    const tiers = durationTiers ?? [];
+    return tiers.find((t) => Number(t.months) === leaseDurationMonths) ?? null;
+  }, [durationTiers, leaseDurationMonths]);
+
+  const durationMultiplierBps = selectedTier?.multiplier_bps ?? 10000;
+
+  const scaledBaseRentKobo = useMemo(() => {
+    return scaleKoboAmountFrom12MonthPrice({
+      amount12_kobo: Number(baseRent?.amountKobo ?? 0),
+      months: leaseDurationMonths,
+      multiplier_bps: durationMultiplierBps,
+    });
+  }, [baseRent?.amountKobo, leaseDurationMonths, durationMultiplierBps]);
 
   const selectedLineItems = useMemo(() => {
     const set = new Set(selectedLineItemIds);
     return lineItems.filter((i) => set.has(i.id));
   }, [selectedLineItemIds, lineItems]);
 
+  const scaledSelectedLineItems = useMemo(() => {
+    return selectedLineItems.map((i) => ({
+      ...i,
+      price: {
+        ...i.price,
+        amountKobo: scaleKoboAmountFrom12MonthPrice({
+          amount12_kobo: Number(i.price.amountKobo ?? 0),
+          months: leaseDurationMonths,
+          multiplier_bps: durationMultiplierBps,
+        }),
+      },
+    }));
+  }, [selectedLineItems, leaseDurationMonths, durationMultiplierBps]);
+
   const optionsSubtotal = useMemo(() => {
-    return selectedLineItems.reduce((acc, i) => acc + i.price.amountKobo, 0);
-  }, [selectedLineItems]);
+    return scaledSelectedLineItems.reduce((acc, i) => acc + i.price.amountKobo, 0);
+  }, [scaledSelectedLineItems]);
 
   const total = useMemo(() => {
-    return (baseRent?.amountKobo ?? 0) + optionsSubtotal;
-  }, [baseRent, optionsSubtotal]);
+    return scaledBaseRentKobo + optionsSubtotal;
+  }, [scaledBaseRentKobo, optionsSubtotal]);
 
   async function onSubmit(values: FormValues) {
     setSubmitResult(null);
@@ -519,12 +568,21 @@ export default function PublicEoi() {
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
                     {...register("leaseDurationMonths")}
                   >
-                    <option value="6">6 months</option>
-                    <option value="12">12 months</option>
-                    <option value="18">18 months</option>
-                    <option value="24">24 months</option>
+                    {(durationTiers ?? []).map((t) => (
+                      <option key={t.months} value={String(t.months)}>
+                        {t.label}
+                      </option>
+                    ))}
                   </select>
                   {fieldError(errors.leaseDurationMonths?.message)}
+                  {selectedTier ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      Pricing factor:{" "}
+                      <span className="font-semibold text-slate-700">
+                        {(selectedTier.multiplier_bps / 10000).toFixed(2)}x
+                      </span>
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -589,6 +647,11 @@ export default function PublicEoi() {
                 <div className="mt-4 space-y-3">
                   {lineItems.map((item) => {
                     const checked = selectedLineItemIds.includes(item.id);
+                    const scaledKobo = scaleKoboAmountFrom12MonthPrice({
+                      amount12_kobo: Number(item.price.amountKobo ?? 0),
+                      months: leaseDurationMonths,
+                      multiplier_bps: durationMultiplierBps,
+                    });
                     return (
                       <label
                         key={item.id}
@@ -614,7 +677,7 @@ export default function PublicEoi() {
                           </div>
                         </div>
                         <div className="shrink-0 text-sm font-semibold text-slate-900">
-                          {formatMoney(item.price)}
+                          {formatMoney({ ...item.price, amountKobo: scaledKobo })}
                         </div>
                       </label>
                     );
@@ -727,7 +790,7 @@ export default function PublicEoi() {
                 <div className="flex items-center justify-between">
                   <span className="text-slate-600">Base rent</span>
                   <span className="font-semibold text-slate-900">
-                    {baseRent ? formatMoney(baseRent) : "—"}
+                    {baseRent ? formatMoney({ ...baseRent, amountKobo: scaledBaseRentKobo }) : "—"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">

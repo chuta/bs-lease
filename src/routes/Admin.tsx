@@ -19,6 +19,7 @@ import {
   updateSubmissionStatus,
 } from "../lib/submissionsApi";
 import { AdminListingGalleryPanel } from "../components/AdminListingGalleryPanel";
+import { DEFAULT_LEASE_DURATION_TIERS, type LeaseDurationTier } from "../lib/leaseDurationApi";
 
 type DbLineItem = {
   id: string;
@@ -37,6 +38,8 @@ type DbPricingConfig = {
   updated_at: string;
 };
 
+type DbLeaseDurationTier = LeaseDurationTier & { updated_at?: string };
+
 function koboFromNairaString(value: string): number {
   const clean = value.replace(/,/g, "").trim();
   if (!clean) return 0;
@@ -47,6 +50,11 @@ function koboFromNairaString(value: string): number {
 
 function nairaStringFromKobo(kobo: number): string {
   return (kobo / 100).toFixed(2);
+}
+
+function pctStringFromBps(bps: number): string {
+  if (!Number.isFinite(bps)) return "0.00";
+  return ((bps / 10000) * 100).toFixed(2);
 }
 
 /** Ensures every canonical public line item exists in admin state (and can be saved to DB). */
@@ -87,6 +95,87 @@ function Banner({ title, children }: { title: string; children: React.ReactNode 
 }
 
 const SIGNED_URL_TTL_SEC = 60 * 60 * 2;
+
+function LeaseDurationRow({
+  tier,
+  busy,
+  onPatch,
+  onRemove,
+}: {
+  tier: DbLeaseDurationTier;
+  busy: boolean;
+  onPatch: (months: number, patch: Partial<DbLeaseDurationTier>) => void;
+  onRemove: (months: number) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <div className="grid gap-3 md:grid-cols-12">
+        <div className="md:col-span-2">
+          <label className="text-xs font-semibold text-slate-600">Months</label>
+          <input
+            type="number"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-600"
+            value={tier.months}
+            disabled
+          />
+          <p className="mt-1 text-[11px] text-slate-500">Primary key (fixed).</p>
+        </div>
+        <div className="md:col-span-4">
+          <label className="text-xs font-semibold text-slate-600">Label</label>
+          <input
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={tier.label}
+            disabled={busy}
+            onChange={(e) => onPatch(tier.months, { label: e.target.value })}
+          />
+        </div>
+        <div className="md:col-span-3">
+          <label className="text-xs font-semibold text-slate-600">Multiplier (bps)</label>
+          <input
+            type="number"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={tier.multiplier_bps}
+            disabled={busy}
+            onChange={(e) => onPatch(tier.months, { multiplier_bps: Number(e.target.value) })}
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            {pctStringFromBps(Number(tier.multiplier_bps ?? 0))}% of pro-rated 12-month price.
+          </p>
+        </div>
+        <div className="md:col-span-1">
+          <label className="text-xs font-semibold text-slate-600">Sort</label>
+          <input
+            type="number"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            value={tier.sort_order}
+            disabled={busy}
+            onChange={(e) => onPatch(tier.months, { sort_order: Number(e.target.value) })}
+          />
+        </div>
+        <div className="md:col-span-2 flex flex-wrap items-end justify-between gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-slate-900"
+              checked={tier.active}
+              disabled={busy}
+              onChange={(e) => onPatch(tier.months, { active: e.target.checked })}
+            />
+            Active
+          </label>
+          <button
+            type="button"
+            disabled={busy}
+            className="rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-800 hover:bg-red-50 disabled:opacity-60"
+            onClick={() => onRemove(tier.months)}
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function IdImagePreview({
   label,
@@ -271,7 +360,7 @@ export default function Admin() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"pricing" | "gallery" | "submissions">("pricing");
+  const [tab, setTab] = useState<"pricing" | "durations" | "gallery" | "submissions">("pricing");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -282,6 +371,8 @@ export default function Admin() {
   /** Line item ids present when config was last loaded or saved (used to DELETE removed rows on save). */
   const idsAtLoadRef = useRef<Set<string>>(new Set());
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+  const [durationTiers, setDurationTiers] = useState<DbLeaseDurationTier[]>([]);
 
   const [submissions, setSubmissions] = useState<EoiSubmissionRow[]>([]);
   const [submissionsStatusFilter, setSubmissionsStatusFilter] = useState<SubmissionStatus | "All">(
@@ -349,8 +440,11 @@ export default function Admin() {
     setBusy(true);
     setSaveMessage(null);
     try {
-      const [{ data: pricingRows, error: pErr }, { data: itemsRows, error: iErr }] =
-        await Promise.all([
+      const [
+        { data: pricingRows, error: pErr },
+        { data: itemsRows, error: iErr },
+        { data: tierRows, error: tErr },
+      ] = await Promise.all([
           supabase
             .from("pricing_config")
             .select("id,currency,base_rent_kobo,updated_at")
@@ -360,10 +454,16 @@ export default function Admin() {
             .from("line_items")
             .select("id,label,description,price_kobo,default_checked,active,sort_order")
             .order("sort_order", { ascending: true }),
+          supabase
+            .from("lease_duration_tiers")
+            .select("months,label,multiplier_bps,active,sort_order,updated_at")
+            .order("sort_order", { ascending: true })
+            .order("months", { ascending: true }),
         ]);
 
       if (pErr) throw pErr;
       if (iErr) throw iErr;
+      if (tErr) throw tErr;
       if (!pricingRows?.length) throw new Error("No pricing_config row found.");
 
       const pr = pricingRows[0] as DbPricingConfig;
@@ -372,6 +472,10 @@ export default function Admin() {
       const merged = mergeCanonicalLineItems((itemsRows ?? []) as DbLineItem[]);
       setLineItems(merged);
       idsAtLoadRef.current = new Set(merged.map((r) => r.id));
+
+      const fromDb = (tierRows ?? []) as unknown as DbLeaseDurationTier[];
+      const active = fromDb.filter((t) => t.active !== false);
+      setDurationTiers(active.length ? active : (DEFAULT_LEASE_DURATION_TIERS as DbLeaseDurationTier[]));
     } finally {
       setBusy(false);
     }
@@ -548,6 +652,20 @@ export default function Admin() {
         if (liErr) throw liErr;
       }
 
+      const tierRows = durationTiers.map((t) => ({
+        months: Number(t.months),
+        label: String(t.label ?? "").trim() || `${t.months} months`,
+        multiplier_bps: Number(t.multiplier_bps ?? 10000),
+        active: Boolean(t.active),
+        sort_order: Number(t.sort_order ?? 0),
+      }));
+      if (tierRows.length > 0) {
+        const { error: tierErr } = await supabase
+          .from("lease_duration_tiers")
+          .upsert(tierRows, { onConflict: "months" });
+        if (tierErr) throw tierErr;
+      }
+
       idsAtLoadRef.current = new Set(lineItems.map((r) => r.id));
 
       setSaveMessage("Saved. Public page updates immediately.");
@@ -560,6 +678,42 @@ export default function Admin() {
 
   function updateLineItem(id: string, patch: Partial<DbLineItem>) {
     setLineItems((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  }
+
+  function updateDurationTier(months: number, patch: Partial<DbLeaseDurationTier>) {
+    setDurationTiers((prev) => prev.map((t) => (t.months === months ? { ...t, ...patch } : t)));
+  }
+
+  function removeDurationTier(months: number) {
+    const ok = window.confirm("Remove this duration tier? It will disappear from the public form.");
+    if (!ok) return;
+    setDurationTiers((prev) => prev.filter((t) => t.months !== months));
+  }
+
+  function addDurationTier() {
+    const raw = window.prompt("Enter duration months (positive integer):", "1");
+    if (!raw) return;
+    const months = Math.floor(Number(raw));
+    if (!Number.isFinite(months) || months <= 0) {
+      setSaveMessage("Invalid months value.");
+      return;
+    }
+    if (durationTiers.some((t) => t.months === months)) {
+      setSaveMessage("That duration already exists.");
+      return;
+    }
+    const maxSort = durationTiers.reduce((m, t) => Math.max(m, Number(t.sort_order ?? 0)), 0);
+    setDurationTiers((prev) => [
+      ...prev,
+      {
+        months,
+        label: months === 1 ? "1 month" : `${months} months`,
+        multiplier_bps: 10000,
+        active: true,
+        sort_order: maxSort + 10,
+      },
+    ]);
+    setSaveMessage(null);
   }
 
   function replaceLineItemId(oldId: string, rawNewId: string): boolean {
@@ -686,6 +840,16 @@ export default function Admin() {
               </button>
               <button
                 className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                  tab === "durations"
+                    ? "bg-slate-900 text-white"
+                    : "border border-slate-200 bg-white hover:bg-slate-100"
+                }`}
+                onClick={() => setTab("durations")}
+              >
+                Lease durations
+              </button>
+              <button
+                className={`rounded-xl px-4 py-2 text-sm font-semibold ${
                   tab === "gallery"
                     ? "bg-slate-900 text-white"
                     : "border border-slate-200 bg-white hover:bg-slate-100"
@@ -709,7 +873,78 @@ export default function Admin() {
               </button>
             </div>
 
-            {tab === "gallery" ? (
+            {tab === "durations" ? (
+              <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+                <div className="rounded-2xl border border-slate-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-slate-950">Lease duration tiers</h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Prices are stored as <span className="font-semibold">12-month</span> amounts in{" "}
+                    <span className="font-mono text-xs">pricing_config</span> and{" "}
+                    <span className="font-mono text-xs">line_items</span>. Each tier applies a multiplier to the
+                    pro-rated amount (months/12).
+                  </p>
+                  <div className="mt-4 space-y-2 text-sm">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                      <div className="font-semibold">Formula</div>
+                      <div className="mt-1 font-mono">
+                        scaled = round(amount12 * (months/12) * (multiplier_bps/10000))
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="mt-4 inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold hover:bg-slate-100 disabled:opacity-60"
+                    onClick={addDurationTier}
+                  >
+                    Add duration tier
+                  </button>
+                  <button
+                    disabled={busy}
+                    className="mt-3 inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold hover:bg-slate-100 disabled:opacity-60"
+                    onClick={loadConfig}
+                  >
+                    Reload from Supabase
+                  </button>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-lg font-semibold text-slate-950">Tiers</h2>
+                    <button
+                      type="button"
+                      className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                      onClick={saveAll}
+                      disabled={busy || !pricing}
+                    >
+                      {busy ? "Saving…" : "Save changes"}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Shorter stays should have higher multipliers (e.g. 1 month &gt; 12 months).
+                  </p>
+                  {saveMessage ? (
+                    <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                      {saveMessage}
+                    </p>
+                  ) : null}
+                  <div className="mt-4 space-y-3">
+                    {durationTiers
+                      .slice()
+                      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                      .map((t) => (
+                        <LeaseDurationRow
+                          key={t.months}
+                          tier={t}
+                          busy={busy}
+                          onPatch={updateDurationTier}
+                          onRemove={removeDurationTier}
+                        />
+                      ))}
+                  </div>
+                </div>
+              </div>
+            ) : tab === "gallery" ? (
               <AdminListingGalleryPanel busy={busy} setBusy={setBusy} setMessage={setSaveMessage} />
             ) : tab === "pricing" ? (
               <div className="grid gap-6 lg:grid-cols-[360px_1fr]">

@@ -132,6 +132,20 @@ type DbPricingRow = {
   base_rent_kobo: number;
 };
 
+type DbLeaseDurationTierRow = {
+  months: number;
+  multiplier_bps: number;
+};
+
+function scaleKoboFrom12MonthPrice(amount12_kobo: number, months: number, multiplierBps: number): number {
+  const amount12 = Number(amount12_kobo ?? 0);
+  const m = Math.floor(Number(months ?? 0));
+  const bps = Number(multiplierBps ?? 0);
+  if (!Number.isFinite(amount12) || !Number.isFinite(m) || !Number.isFinite(bps)) return 0;
+  if (m <= 0 || bps < 0) return 0;
+  return Math.round(amount12 * (m / 12) * (bps / 10000));
+}
+
 export const handler: Handler = async (event) => {
   try {
     const referenceId = makeReferenceId();
@@ -203,8 +217,16 @@ export const handler: Handler = async (event) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    const [{ data: pricingRows, error: pricingErr }, { data: lineItemRows, error: itemsErr }] =
-      await Promise.all([
+    const months = Math.floor(Number(data.leaseDurationMonths ?? "0"));
+    if (!Number.isFinite(months) || months <= 0) {
+      throw new Error("Invalid lease duration months.");
+    }
+
+    const [
+      { data: pricingRows, error: pricingErr },
+      { data: lineItemRows, error: itemsErr },
+      { data: tierRows, error: tierErr },
+    ] = await Promise.all([
         supabase
           .from("pricing_config")
           .select("currency, base_rent_kobo, updated_at")
@@ -214,15 +236,26 @@ export const handler: Handler = async (event) => {
           .from("line_items")
           .select("id,label,description,price_kobo,active,sort_order")
           .eq("active", true),
+        supabase
+          .from("lease_duration_tiers")
+          .select("months,multiplier_bps,active")
+          .eq("months", months)
+          .eq("active", true)
+          .limit(1),
       ]);
 
     if (pricingErr) throw pricingErr;
     if (itemsErr) throw itemsErr;
+    if (tierErr) throw tierErr;
     if (!pricingRows?.length) throw new Error("No pricing_config found in Supabase.");
+    if (!tierRows?.length) throw new Error("No lease duration tier found for the selected duration.");
 
     const pricing = pricingRows[0] as unknown as DbPricingRow;
     const currency = pricing.currency || "NGN";
-    const base_rent_kobo = Number(pricing.base_rent_kobo ?? 0);
+    const base_rent_kobo_12 = Number(pricing.base_rent_kobo ?? 0);
+    const tier = tierRows[0] as unknown as DbLeaseDurationTierRow;
+    const duration_multiplier_bps = Number(tier.multiplier_bps ?? 10000);
+    const base_rent_kobo = scaleKoboFrom12MonthPrice(base_rent_kobo_12, months, duration_multiplier_bps);
 
     const itemMap = new Map<string, DbLineItemRow>();
     for (const r of (lineItemRows ?? []) as unknown as DbLineItemRow[]) {
@@ -246,7 +279,11 @@ export const handler: Handler = async (event) => {
     const selectedLineItems = selectedLineItemIds
       .map((id) => itemMap.get(id))
       .filter(Boolean)
-      .map((r) => r as DbLineItemRow);
+      .map((r) => r as DbLineItemRow)
+      .map((r) => ({
+        ...r,
+        price_kobo: scaleKoboFrom12MonthPrice(r.price_kobo, months, duration_multiplier_bps),
+      }));
 
     const options_kobo = selectedLineItems.reduce((acc, x) => acc + x.price_kobo, 0);
     const total_kobo = base_rent_kobo + options_kobo;
@@ -322,6 +359,7 @@ export const handler: Handler = async (event) => {
       base_rent_kobo,
       options_kobo,
       total_kobo,
+      duration_multiplier_bps,
       selected_line_items: selectedSnapshot,
       passport_object_path: passportPath,
       nin_object_path: ninPath,
