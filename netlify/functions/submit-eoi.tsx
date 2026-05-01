@@ -357,6 +357,33 @@ export const handler: Handler = async (event) => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     log(referenceId, "supabase:client_ready");
 
+    // Prevent duplicate submissions: at most one submission per email in a rolling window.
+    // This check runs early to avoid PDF generation + storage uploads for duplicates.
+    const DUP_WINDOW_MIN = Math.max(1, Number(process.env.EOI_DUP_WINDOW_MIN ?? 60 * 12)); // default 12 hours
+    const sinceIso = new Date(Date.now() - DUP_WINDOW_MIN * 60 * 1000).toISOString();
+    const { data: recentDup, error: dupErr } = await supabase
+      .from("eoi_submissions")
+      .select("reference_id, created_at")
+      .eq("email", data.email)
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (dupErr) {
+      logErr(referenceId, "dedupe:query_failed", dupErr, { email: data.email, sinceIso });
+    } else if (recentDup && recentDup.length) {
+      const prev = recentDup[0] as { reference_id?: string; created_at?: string };
+      log(referenceId, "dedupe:blocked", { previousReferenceId: prev.reference_id, previousCreatedAt: prev.created_at });
+      return {
+        statusCode: 429,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ok: false,
+          referenceId,
+          message: `We already received an Expression of Interest from this email recently (ref: ${prev.reference_id ?? "unknown"}). Please wait ${DUP_WINDOW_MIN} minutes before submitting again.`,
+        }),
+      };
+    }
+
     const months = Math.floor(Number(data.leaseDurationMonths ?? "0"));
     if (!Number.isFinite(months) || months <= 0) {
       throw new Error("Invalid lease duration months.");

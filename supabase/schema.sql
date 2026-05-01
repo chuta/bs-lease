@@ -260,6 +260,14 @@ create index if not exists eoi_submissions_status_idx on public.eoi_submissions(
 create index if not exists eoi_submissions_created_at_idx on public.eoi_submissions(created_at desc);
 create index if not exists eoi_submissions_email_idx on public.eoi_submissions(email);
 
+-- Optional anti-spam uniqueness: one submission per email per day.
+-- NOTE: This is a safeguard; server-side dedupe also exists.
+alter table public.eoi_submissions
+  add column if not exists submission_day date generated always as ((created_at at time zone 'utc')::date) stored;
+
+create unique index if not exists eoi_submissions_email_day_uniq
+  on public.eoi_submissions (email, submission_day);
+
 -- Notes (internal)
 create table if not exists public.eoi_notes (
   id uuid primary key default gen_random_uuid(),
