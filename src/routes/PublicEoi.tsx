@@ -37,10 +37,10 @@ const FormSchema = z
     email: z.string().email("Enter a valid email."),
     occupation: z.string().min(2, "Current occupation is required."),
     industry: z.string().min(2, "Industry/sector is required."),
-    facebookHandle: z.string().min(2, "Facebook handle/link is required."),
-    xHandle: z.string().min(2, "Twitter/X handle/link is required."),
-    instagramHandle: z.string().min(2, "Instagram handle/link is required."),
-    linkedinHandle: z.string().min(2, "LinkedIn handle/link is required."),
+    facebookHandle: z.string().optional(),
+    xHandle: z.string().optional(),
+    instagramHandle: z.string().optional(),
+    linkedinHandle: z.string().optional(),
     nin: z.string().min(5, "NIN is required."),
     passportUpload: z
       .any()
@@ -71,6 +71,20 @@ const FormSchema = z
     consentVerification: z.literal(true, { message: "Consent is required." }),
   })
   .superRefine((data, ctx) => {
+    const social = [
+      (data.facebookHandle ?? "").trim(),
+      (data.xHandle ?? "").trim(),
+      (data.instagramHandle ?? "").trim(),
+      (data.linkedinHandle ?? "").trim(),
+    ];
+    const hasOne = social.some((s) => s.length >= 2);
+    if (!hasOne) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["facebookHandle"],
+        message: "Provide at least one social media profile (any of Facebook, X, Instagram, LinkedIn).",
+      });
+    }
     if (data.estateAgentId === "other") {
       if (!data.otherAgentName || data.otherAgentName.trim().length < 2) {
         ctx.addIssue({
@@ -459,7 +473,7 @@ export default function PublicEoi() {
                   {fieldError(errors.industry?.message)}
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Facebook *</label>
+                  <label className="text-sm font-medium text-slate-700">Facebook</label>
                   <input
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
                     {...register("facebookHandle")}
@@ -468,7 +482,7 @@ export default function PublicEoi() {
                   {fieldError(errors.facebookHandle?.message)}
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Twitter/X *</label>
+                  <label className="text-sm font-medium text-slate-700">Twitter/X</label>
                   <input
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
                     {...register("xHandle")}
@@ -477,7 +491,7 @@ export default function PublicEoi() {
                   {fieldError(errors.xHandle?.message)}
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Instagram *</label>
+                  <label className="text-sm font-medium text-slate-700">Instagram</label>
                   <input
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
                     {...register("instagramHandle")}
@@ -486,7 +500,7 @@ export default function PublicEoi() {
                   {fieldError(errors.instagramHandle?.message)}
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-slate-700">LinkedIn *</label>
+                  <label className="text-sm font-medium text-slate-700">LinkedIn</label>
                   <input
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
                     {...register("linkedinHandle")}

@@ -39,6 +39,14 @@ function requiredString(fields: Record<string, string | string[]>, key: string):
   return s.trim();
 }
 
+function optionalString(fields: Record<string, string | string[]>, key: string): string | null {
+  const v = fields[key];
+  if (v === undefined || v === null) return null;
+  const s = Array.isArray(v) ? v[0] : v;
+  const out = String(s ?? "").trim();
+  return out ? out : null;
+}
+
 function yesNo(fields: Record<string, string | string[]>, key: string): "yes" | "no" {
   const v = requiredString(fields, key).toLowerCase();
   if (v !== "yes" && v !== "no") throw new Error(`Invalid field: ${key}`);
@@ -188,10 +196,10 @@ export const handler: Handler = async (event) => {
       email: requiredString(fields, "email"),
       occupation: requiredString(fields, "occupation"),
       industry: requiredString(fields, "industry"),
-      facebookHandle: requiredString(fields, "facebookHandle"),
-      xHandle: requiredString(fields, "xHandle"),
-      instagramHandle: requiredString(fields, "instagramHandle"),
-      linkedinHandle: requiredString(fields, "linkedinHandle"),
+      facebookHandle: optionalString(fields, "facebookHandle") ?? "",
+      xHandle: optionalString(fields, "xHandle") ?? "",
+      instagramHandle: optionalString(fields, "instagramHandle") ?? "",
+      linkedinHandle: optionalString(fields, "linkedinHandle") ?? "",
       nin: requiredString(fields, "nin"),
       preferredUnit: requiredString(fields, "preferredUnit"),
       moveInDate: (fields["moveInDate"] ? String(fields["moveInDate"]) : "").trim(),
@@ -204,6 +212,16 @@ export const handler: Handler = async (event) => {
       drugAddiction: yesNo(fields, "drugAddiction"),
       estateAgent,
     };
+
+    const social = [
+      data.facebookHandle.trim(),
+      data.xHandle.trim(),
+      data.instagramHandle.trim(),
+      data.linkedinHandle.trim(),
+    ];
+    if (!social.some((s) => s.length >= 2)) {
+      throw new Error("Provide at least one social media profile (Facebook, X, Instagram, or LinkedIn).");
+    }
 
     const selectedLineItemIds = getStringArray(fields, "selectedLineItemIds");
 
@@ -348,10 +366,10 @@ export const handler: Handler = async (event) => {
       occupation: data.occupation,
       industry: data.industry,
       nin: data.nin,
-      facebook_handle: data.facebookHandle,
-      x_handle: data.xHandle,
-      instagram_handle: data.instagramHandle,
-      linkedin_handle: data.linkedinHandle,
+      facebook_handle: data.facebookHandle.trim() || null,
+      x_handle: data.xHandle.trim() || null,
+      instagram_handle: data.instagramHandle.trim() || null,
+      linkedin_handle: data.linkedinHandle.trim() || null,
       preferred_unit: data.preferredUnit,
       move_in_date: moveInDate,
       lease_duration_months: Number(data.leaseDurationMonths),

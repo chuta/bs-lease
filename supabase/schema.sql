@@ -208,10 +208,10 @@ create table if not exists public.eoi_submissions (
   occupation text not null,
   industry text not null,
   nin text not null,
-  facebook_handle text not null,
-  x_handle text not null,
-  instagram_handle text not null,
-  linkedin_handle text not null,
+  facebook_handle text null,
+  x_handle text null,
+  instagram_handle text null,
+  linkedin_handle text null,
 
   -- Apartment preference
   preferred_unit text not null,
@@ -250,6 +250,11 @@ create table if not exists public.eoi_submissions (
 
 alter table public.eoi_submissions
   add column if not exists duration_multiplier_bps int null;
+
+alter table public.eoi_submissions alter column facebook_handle drop not null;
+alter table public.eoi_submissions alter column x_handle drop not null;
+alter table public.eoi_submissions alter column instagram_handle drop not null;
+alter table public.eoi_submissions alter column linkedin_handle drop not null;
 
 create index if not exists eoi_submissions_status_idx on public.eoi_submissions(status);
 create index if not exists eoi_submissions_created_at_idx on public.eoi_submissions(created_at desc);
