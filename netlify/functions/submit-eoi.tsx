@@ -96,6 +96,21 @@ function logErr(referenceId: string, step: string, err: unknown, ctx?: SafeLogCo
   );
 }
 
+async function resendSendChecked(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resend: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: any,
+): Promise<{ id?: string }> {
+  // Resend SDK may return { data, error } without throwing.
+  const resp = await resend.emails.send(payload);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = resp as any;
+  if (r?.error) throw r.error;
+  const id = r?.data?.id || r?.data || r?.id;
+  return typeof id === "string" ? { id } : {};
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -583,43 +598,81 @@ export const handler: Handler = async (event) => {
       },
     ];
 
-    await resend.emails.send({
-      from: FROM_EMAIL,
-      to: ADMIN_EMAIL,
-      subject: adminSubject,
-      html: adminHtml,
-      attachments: attachmentsAdmin,
-    });
-    log(referenceId, "email:admin_sent");
+    let adminSent = false;
+    let clientConfirmSent = false;
+    let clientPdfSent = false;
 
-    const clientSubject = `Your Expression of Interest – ${referenceId}`;
-    const clientHtml = `
-      <p>Dear ${data.fullName},</p>
-      <p>Thank you for submitting your Expression of Interest for BlockSpace Technologies Ltd Leasing.</p>
-      <p><b>Reference ID</b>: ${referenceId}</p>
-      <p>This is an interest-only submission and not a final agreement.</p>
-      <p>Please find your PDF copy attached.</p>
-    `;
+    try {
+      const { id } = await resendSendChecked(resend, {
+        from: FROM_EMAIL,
+        to: ADMIN_EMAIL,
+        subject: adminSubject,
+        html: adminHtml,
+        attachments: attachmentsAdmin,
+      });
+      adminSent = true;
+      log(referenceId, "email:admin_sent", { id });
+    } catch (e) {
+      logErr(referenceId, "email:admin_failed", e);
+    }
 
-    await resend.emails.send({
-      from: FROM_EMAIL,
-      to: data.email,
-      subject: clientSubject,
-      html: clientHtml,
-      attachments: [
-        {
-          filename: `${referenceId}.pdf`,
-          content: pdfBytes.toString("base64"),
-        },
-      ],
-    });
-    log(referenceId, "email:client_sent");
+    // Always send a lightweight confirmation email (no attachments) for deliverability.
+    try {
+      const confirmSubject = `We received your Expression of Interest – ${referenceId}`;
+      const confirmHtml = `
+        <p>Dear ${data.fullName},</p>
+        <p>We have received your Expression of Interest for BlockSpace Technologies Ltd Leasing.</p>
+        <p><b>Reference ID</b>: ${referenceId}</p>
+        <p>This is an interest-only submission and not a final agreement.</p>
+        <p>If you have questions, reply to this email and include your reference ID.</p>
+      `;
+      const { id } = await resendSendChecked(resend, {
+        from: FROM_EMAIL,
+        to: data.email,
+        subject: confirmSubject,
+        html: confirmHtml,
+      });
+      clientConfirmSent = true;
+      log(referenceId, "email:client_confirm_sent", { id });
+    } catch (e) {
+      logErr(referenceId, "email:client_confirm_failed", e);
+    }
+
+    // Best-effort PDF copy: send separately, so a blocked attachment doesn't prevent confirmation.
+    try {
+      const clientSubject = `Your Expression of Interest PDF – ${referenceId}`;
+      const clientHtml = `
+        <p>Dear ${data.fullName},</p>
+        <p>Attached is your Expression of Interest PDF copy.</p>
+        <p><b>Reference ID</b>: ${referenceId}</p>
+      `;
+      const { id } = await resendSendChecked(resend, {
+        from: FROM_EMAIL,
+        to: data.email,
+        subject: clientSubject,
+        html: clientHtml,
+        attachments: [
+          {
+            filename: `${referenceId}.pdf`,
+            content: pdfBytes.toString("base64"),
+          },
+        ],
+      });
+      clientPdfSent = true;
+      log(referenceId, "email:client_pdf_sent", { id });
+    } catch (e) {
+      logErr(referenceId, "email:client_pdf_failed", e);
+    }
 
     log(referenceId, "done:ok");
     return {
       statusCode: 200,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ok: true, referenceId }),
+      body: JSON.stringify({
+        ok: true,
+        referenceId,
+        email: { adminSent, clientConfirmSent, clientPdfSent },
+      }),
     };
   } catch (err) {
     logErr(referenceId, "done:error", err);
