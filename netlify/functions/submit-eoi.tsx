@@ -38,7 +38,37 @@ function errToDebugObject(err: unknown): SafeLogContext {
       cause: (err as any)?.cause,
     };
   }
-  return { nonError: String(err) };
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(o)) out[k] = o[k];
+    return { nonErrorType: "object", ...out };
+  }
+  return { nonErrorType: typeof err, nonError: String(err) };
+}
+
+function messageFromUnknownError(err: unknown): string {
+  if (err instanceof Error) return err.message || "Unknown error";
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const candidates = [
+      o["message"],
+      o["error"],
+      o["error_description"],
+      o["details"],
+      o["hint"],
+      o["code"],
+    ]
+      .map((x) => (typeof x === "string" ? x.trim() : ""))
+      .filter(Boolean);
+    if (candidates.length) return candidates.join(" | ");
+    try {
+      return JSON.stringify(o);
+    } catch {
+      return "Unknown error (non-serializable object)";
+    }
+  }
+  return String(err || "Unknown error");
 }
 
 function log(referenceId: string, step: string, ctx?: SafeLogContext) {
@@ -476,7 +506,10 @@ export const handler: Handler = async (event) => {
       nin_object_path: ninPath,
       pdf_object_path: pdfPath,
     });
-    if (insErr) throw insErr;
+    if (insErr) {
+      logErr(referenceId, "db:insert_submission:error", insErr);
+      throw insErr;
+    }
     log(referenceId, "db:insert_submission:ok");
 
     const DISABLE_EMAILS = String(process.env.DISABLE_EMAILS || "").toLowerCase() === "true";
@@ -580,7 +613,7 @@ export const handler: Handler = async (event) => {
     };
   } catch (err) {
     logErr(referenceId, "done:error", err);
-    const message = err instanceof Error ? err.message : String(err || "Unknown error");
+    const message = messageFromUnknownError(err);
     return {
       statusCode: 400,
       headers: { "content-type": "application/json" },
