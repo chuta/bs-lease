@@ -72,6 +72,16 @@ function messageFromUnknownError(err: unknown): string {
 }
 
 function log(referenceId: string, step: string, ctx?: SafeLogContext) {
+  const VERBOSE = String(process.env.SUBMIT_EOI_VERBOSE_LOGS || "").toLowerCase() === "true";
+  const IMPORTANT_STEPS = new Set<string>([
+    "start",
+    "fields:validated",
+    "pricing:computed_totals",
+    "db:insert_submission:ok",
+    "email:send:begin",
+    "done:ok",
+  ]);
+  if (!VERBOSE && !IMPORTANT_STEPS.has(step)) return;
   const base = { referenceId, step, at: nowIso() };
   if (!ctx) {
     console.log(`[submit-eoi] ${safeJson(base)}`);
