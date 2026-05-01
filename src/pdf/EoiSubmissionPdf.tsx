@@ -1,4 +1,8 @@
+import React from "react";
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+
+// Ensures React is in scope for Netlify server bundles that still expect classic JSX runtime.
+void React;
 
 export type EoiPdfSelectedLineItem = { id: string; label: string; price_kobo: number };
 
