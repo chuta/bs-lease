@@ -285,6 +285,13 @@ export const handler: Handler = async (event) => {
         price_kobo: scaleKoboFrom12MonthPrice(r.price_kobo, months, duration_multiplier_bps),
       }));
 
+    // Keep PDF inputs minimal/stable to avoid renderer edge cases.
+    const pdfSelectedLineItems = selectedLineItems.map((x) => ({
+      id: x.id,
+      label: x.label,
+      price_kobo: Number(x.price_kobo ?? 0),
+    }));
+
     const options_kobo = selectedLineItems.reduce((acc, x) => acc + x.price_kobo, 0);
     const total_kobo = base_rent_kobo + options_kobo;
 
@@ -293,7 +300,7 @@ export const handler: Handler = async (event) => {
         referenceId={referenceId}
         submittedAt={submittedAt}
         data={data}
-        selectedLineItems={selectedLineItems}
+        selectedLineItems={pdfSelectedLineItems}
         totals={{ currency, base_rent_kobo, options_kobo, total_kobo }}
       />,
     ).toBuffer();
@@ -320,7 +327,7 @@ export const handler: Handler = async (event) => {
     if (upPdfErr) throw upPdfErr;
 
     const moveInDate = data.moveInDate ? data.moveInDate : null;
-    const selectedSnapshot = selectedLineItems.map((x) => ({
+    const selectedSnapshot = pdfSelectedLineItems.map((x) => ({
       id: x.id,
       label: x.label,
       price_kobo: x.price_kobo,
