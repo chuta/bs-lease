@@ -18,6 +18,44 @@ type ParsedForm = {
   files: Record<string, UploadFile>;
 };
 
+type SafeLogContext = Record<string, unknown>;
+
+function safeJson(x: unknown): string {
+  try {
+    return JSON.stringify(x);
+  } catch {
+    return "\"<unserializable>\"";
+  }
+}
+
+function errToDebugObject(err: unknown): SafeLogContext {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      cause: (err as any)?.cause,
+    };
+  }
+  return { nonError: String(err) };
+}
+
+function log(referenceId: string, step: string, ctx?: SafeLogContext) {
+  const base = { referenceId, step, at: nowIso() };
+  if (!ctx) {
+    console.log(`[submit-eoi] ${safeJson(base)}`);
+    return;
+  }
+  console.log(`[submit-eoi] ${safeJson({ ...base, ...ctx })}`);
+}
+
+function logErr(referenceId: string, step: string, err: unknown, ctx?: SafeLogContext) {
+  console.error(
+    `[submit-eoi] ${safeJson({ referenceId, step, at: nowIso(), ...ctx, error: errToDebugObject(err) })}`,
+  );
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -155,14 +193,24 @@ function scaleKoboFrom12MonthPrice(amount12_kobo: number, months: number, multip
 }
 
 export const handler: Handler = async (event) => {
+  const referenceId = makeReferenceId();
+  const submittedAt = nowIso();
   try {
-    const referenceId = makeReferenceId();
-    const submittedAt = nowIso();
+    log(referenceId, "start", {
+      isBase64Encoded: Boolean(event.isBase64Encoded),
+      hasBody: Boolean(event.body),
+      contentType: event.headers?.["content-type"] || event.headers?.["Content-Type"] || null,
+    });
 
+    log(referenceId, "parseMultipart:begin");
     const parsed = await parseMultipart({
       headers: event.headers ?? {},
       body: event.body ?? null,
       isBase64Encoded: Boolean(event.isBase64Encoded),
+    });
+    log(referenceId, "parseMultipart:ok", {
+      fieldKeys: Object.keys(parsed.fields || {}).slice(0, 100),
+      fileKeys: Object.keys(parsed.files || {}),
     });
 
     const fields = parsed.fields;
@@ -171,6 +219,10 @@ export const handler: Handler = async (event) => {
 
     if (!passport) throw new Error("Missing passport upload.");
     if (!ninUpload) throw new Error("Missing NIN upload.");
+    log(referenceId, "uploads:received", {
+      passport: { filename: passport.filename, contentType: passport.contentType, bytes: passport.data.length },
+      nin: { filename: ninUpload.filename, contentType: ninUpload.contentType, bytes: ninUpload.data.length },
+    });
 
     const estateAgentId = requiredString(fields, "estateAgentId");
     const otherAgentName = (fields["otherAgentName"] ? String(fields["otherAgentName"]) : "").trim();
@@ -212,6 +264,19 @@ export const handler: Handler = async (event) => {
       drugAddiction: yesNo(fields, "drugAddiction"),
       estateAgent,
     };
+    log(referenceId, "fields:validated", {
+      email: data.email,
+      leaseDurationMonths: data.leaseDurationMonths,
+      preferredUnit: data.preferredUnit,
+      selectedSocialCount: [
+        data.facebookHandle.trim(),
+        data.xHandle.trim(),
+        data.instagramHandle.trim(),
+        data.linkedinHandle.trim(),
+      ].filter((s) => s.length >= 2).length,
+      // do NOT log NIN value
+      ninPresent: Boolean(data.nin?.trim()),
+    });
 
     const social = [
       data.facebookHandle.trim(),
@@ -224,6 +289,7 @@ export const handler: Handler = async (event) => {
     }
 
     const selectedLineItemIds = getStringArray(fields, "selectedLineItemIds");
+    log(referenceId, "lineItems:selected", { count: selectedLineItemIds.length, ids: selectedLineItemIds });
 
     // Fetch live pricing config from Supabase (server-only)
     const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -234,12 +300,15 @@ export const handler: Handler = async (event) => {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    log(referenceId, "supabase:client_ready");
 
     const months = Math.floor(Number(data.leaseDurationMonths ?? "0"));
     if (!Number.isFinite(months) || months <= 0) {
       throw new Error("Invalid lease duration months.");
     }
+    log(referenceId, "duration:parsed", { months });
 
+    log(referenceId, "supabase:fetch_pricing_line_items_tier:begin");
     const [
       { data: pricingRows, error: pricingErr },
       { data: lineItemRows, error: itemsErr },
@@ -267,6 +336,11 @@ export const handler: Handler = async (event) => {
     if (tierErr) throw tierErr;
     if (!pricingRows?.length) throw new Error("No pricing_config found in Supabase.");
     if (!tierRows?.length) throw new Error("No lease duration tier found for the selected duration.");
+    log(referenceId, "supabase:fetch_pricing_line_items_tier:ok", {
+      pricingRows: pricingRows.length,
+      lineItemRows: (lineItemRows ?? []).length,
+      tierRows: tierRows.length,
+    });
 
     const pricing = pricingRows[0] as unknown as DbPricingRow;
     const currency = pricing.currency || "NGN";
@@ -274,6 +348,12 @@ export const handler: Handler = async (event) => {
     const tier = tierRows[0] as unknown as DbLeaseDurationTierRow;
     const duration_multiplier_bps = Number(tier.multiplier_bps ?? 10000);
     const base_rent_kobo = scaleKoboFrom12MonthPrice(base_rent_kobo_12, months, duration_multiplier_bps);
+    log(referenceId, "pricing:computed_base", {
+      currency,
+      base_rent_kobo_12,
+      duration_multiplier_bps,
+      base_rent_kobo,
+    });
 
     const itemMap = new Map<string, DbLineItemRow>();
     for (const r of (lineItemRows ?? []) as unknown as DbLineItemRow[]) {
@@ -312,7 +392,9 @@ export const handler: Handler = async (event) => {
 
     const options_kobo = selectedLineItems.reduce((acc, x) => acc + x.price_kobo, 0);
     const total_kobo = base_rent_kobo + options_kobo;
+    log(referenceId, "pricing:computed_totals", { options_kobo, total_kobo, items: pdfSelectedLineItems.length });
 
+    log(referenceId, "pdf:render:begin");
     const pdfBytes = await pdf(
       <EoiSubmissionPdf
         referenceId={referenceId}
@@ -322,6 +404,7 @@ export const handler: Handler = async (event) => {
         totals={{ currency, base_rent_kobo, options_kobo, total_kobo }}
       />,
     ).toBuffer();
+    log(referenceId, "pdf:render:ok", { bytes: pdfBytes.length });
 
     // Upload passport/NIN/PDF to Supabase Storage and insert submission record.
     const bucket = "eoi-uploads";
@@ -329,6 +412,7 @@ export const handler: Handler = async (event) => {
     const ninPath = `nin/${referenceId}-${safePathPart(ninUpload.filename)}`;
     const pdfPath = `pdf/${referenceId}.pdf`;
 
+    log(referenceId, "storage:upload:begin", { bucket, passportPath, ninPath, pdfPath });
     const { error: upPassErr } = await supabase.storage
       .from(bucket)
       .upload(passportPath, passport.data, { contentType: passport.contentType, upsert: true });
@@ -343,6 +427,7 @@ export const handler: Handler = async (event) => {
       .from(bucket)
       .upload(pdfPath, pdfBytes, { contentType: "application/pdf", upsert: true });
     if (upPdfErr) throw upPdfErr;
+    log(referenceId, "storage:upload:ok");
 
     const moveInDate = data.moveInDate ? data.moveInDate : null;
     const selectedSnapshot = pdfSelectedLineItems.map((x) => ({
@@ -351,6 +436,7 @@ export const handler: Handler = async (event) => {
       price_kobo: x.price_kobo,
     }));
 
+    log(referenceId, "db:insert_submission:begin");
     const { error: insErr } = await supabase.from("eoi_submissions").insert({
       reference_id: referenceId,
       status: "Pending",
@@ -365,7 +451,7 @@ export const handler: Handler = async (event) => {
       email: data.email,
       occupation: data.occupation,
       industry: data.industry,
-      nin: data.nin,
+      nin: data.nin, // do not log
       facebook_handle: data.facebookHandle.trim() || null,
       x_handle: data.xHandle.trim() || null,
       instagram_handle: data.instagramHandle.trim() || null,
@@ -391,6 +477,7 @@ export const handler: Handler = async (event) => {
       pdf_object_path: pdfPath,
     });
     if (insErr) throw insErr;
+    log(referenceId, "db:insert_submission:ok");
 
     const DISABLE_EMAILS = String(process.env.DISABLE_EMAILS || "").toLowerCase() === "true";
 
@@ -399,6 +486,7 @@ export const handler: Handler = async (event) => {
     const FROM_EMAIL = process.env.FROM_EMAIL;
 
     if (DISABLE_EMAILS) {
+      log(referenceId, "email:skipped", { reason: "DISABLE_EMAILS=true" });
       return {
         statusCode: 200,
         headers: { "content-type": "application/json" },
@@ -411,6 +499,7 @@ export const handler: Handler = async (event) => {
     if (!FROM_EMAIL) throw new Error("Server not configured: FROM_EMAIL missing.");
 
     const resend = new Resend(RESEND_API_KEY);
+    log(referenceId, "email:send:begin", { adminTo: ADMIN_EMAIL, clientTo: data.email });
 
     const adminSubject = `EOI Submission – ${data.fullName} – ${referenceId}`;
     const adminHtml = `
@@ -458,6 +547,7 @@ export const handler: Handler = async (event) => {
       html: adminHtml,
       attachments: attachmentsAdmin,
     });
+    log(referenceId, "email:admin_sent");
 
     const clientSubject = `Your Expression of Interest – ${referenceId}`;
     const clientHtml = `
@@ -480,18 +570,21 @@ export const handler: Handler = async (event) => {
         },
       ],
     });
+    log(referenceId, "email:client_sent");
 
+    log(referenceId, "done:ok");
     return {
       statusCode: 200,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ok: true, referenceId }),
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
+    logErr(referenceId, "done:error", err);
+    const message = err instanceof Error ? err.message : String(err || "Unknown error");
     return {
       statusCode: 400,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ok: false, message }),
+      body: JSON.stringify({ ok: false, message, referenceId }),
     };
   }
 };
