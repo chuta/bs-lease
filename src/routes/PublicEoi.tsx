@@ -830,6 +830,28 @@ export default function PublicEoi() {
                 Expression of Interest and are delivered via email to the property admin.
               </p>
             </div>
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-6">
+              <h2 className="text-base font-semibold text-slate-950">Payment information</h2>
+              <p className="mt-2 text-xs font-medium text-slate-900">
+                All payments must be made only to the company account below. Do not send funds to
+                any other account or name.
+              </p>
+              <dl className="mt-3 space-y-2 text-xs text-slate-700">
+                <div>
+                  <dt className="text-slate-500">Account name</dt>
+                  <dd className="font-medium text-slate-950">BLOCKSPACE TECH. NIGERIA LTD</dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Account number</dt>
+                  <dd className="font-mono font-medium text-slate-950">1307580457</dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Bank name</dt>
+                  <dd className="font-medium text-slate-950">Providus Bank</dd>
+                </div>
+              </dl>
+            </div>
           </aside>
         </div>
       </div>
