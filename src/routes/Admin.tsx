@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { formatPreferredUnitForDisplay } from "../data/apartmentUnits";
 import { formatMoney, lineItems as canonicalLineItems, type Money } from "../data/lineItems";
 import {
   parseSelectedLineItemsForPdf,
@@ -36,6 +37,14 @@ type DbPricingConfig = {
   currency: string;
   base_rent_kobo: number;
   updated_at: string;
+};
+
+type DbApartmentUnit = {
+  id: string;
+  label: string;
+  available: boolean;
+  notes: string | null;
+  sort_order: number;
 };
 
 type DbLeaseDurationTier = LeaseDurationTier & { updated_at?: string };
@@ -360,7 +369,7 @@ export default function Admin() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"pricing" | "durations" | "gallery" | "submissions">("pricing");
+  const [tab, setTab] = useState<"pricing" | "durations" | "units" | "gallery" | "submissions">("pricing");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -373,6 +382,7 @@ export default function Admin() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const [durationTiers, setDurationTiers] = useState<DbLeaseDurationTier[]>([]);
+  const [apartmentUnits, setApartmentUnits] = useState<DbApartmentUnit[]>([]);
 
   const [submissions, setSubmissions] = useState<EoiSubmissionRow[]>([]);
   const [submissionsStatusFilter, setSubmissionsStatusFilter] = useState<SubmissionStatus | "All">(
@@ -433,6 +443,7 @@ export default function Admin() {
     setLineItems([]);
     idsAtLoadRef.current = new Set();
     setBaseRentInput("");
+    setApartmentUnits([]);
   }
 
   async function loadConfig() {
@@ -444,6 +455,7 @@ export default function Admin() {
         { data: pricingRows, error: pErr },
         { data: itemsRows, error: iErr },
         { data: tierRows, error: tErr },
+        { data: aptRows, error: aptErr },
       ] = await Promise.all([
           supabase
             .from("pricing_config")
@@ -459,11 +471,20 @@ export default function Admin() {
             .select("months,label,multiplier_bps,active,sort_order,updated_at")
             .order("sort_order", { ascending: true })
             .order("months", { ascending: true }),
+          supabase
+            .from("apartment_units")
+            .select("id,label,available,notes,sort_order")
+            .order("sort_order", { ascending: true }),
         ]);
 
       if (pErr) throw pErr;
       if (iErr) throw iErr;
       if (tErr) throw tErr;
+      if (aptErr) {
+        setApartmentUnits([]);
+      } else {
+        setApartmentUnits((aptRows ?? []) as DbApartmentUnit[]);
+      }
       if (!pricingRows?.length) throw new Error("No pricing_config row found.");
 
       const pr = pricingRows[0] as DbPricingConfig;
@@ -607,6 +628,38 @@ export default function Admin() {
       setNotes(n);
     } catch (e) {
       setSaveMessage(e instanceof Error ? e.message : "Failed to add note.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function patchApartmentUnit(id: string, patch: Partial<DbApartmentUnit>) {
+    setApartmentUnits((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+  }
+
+  async function saveApartmentUnits() {
+    if (!supabase) return;
+    setBusy(true);
+    setSaveMessage(null);
+    try {
+      const rows = apartmentUnits.map((u) => ({
+        id: u.id,
+        label: u.label.trim() || u.id,
+        available: Boolean(u.available),
+        notes: u.notes?.trim() ? u.notes.trim() : null,
+        sort_order: Number(u.sort_order ?? 0),
+      }));
+      if (!rows.length) {
+        setSaveMessage(
+          "No apartment rows loaded. Add the apartment_units table from supabase/schema.sql (or supabase/migrations/20260202180000_apartment_units.sql), then reload.",
+        );
+        return;
+      }
+      const { error } = await supabase.from("apartment_units").upsert(rows, { onConflict: "id" });
+      if (error) throw error;
+      setSaveMessage("Apartment units saved. The public EOI page picks these up via the availability API.");
+    } catch (e) {
+      setSaveMessage(e instanceof Error ? e.message : "Save failed.");
     } finally {
       setBusy(false);
     }
@@ -860,6 +913,19 @@ export default function Admin() {
               </button>
               <button
                 className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                  tab === "units"
+                    ? "bg-slate-900 text-white"
+                    : "border border-slate-200 bg-white hover:bg-slate-100"
+                }`}
+                onClick={() => {
+                  setTab("units");
+                  void loadConfig();
+                }}
+              >
+                Apartment units
+              </button>
+              <button
+                className={`rounded-xl px-4 py-2 text-sm font-semibold ${
                   tab === "submissions"
                     ? "bg-slate-900 text-white"
                     : "border border-slate-200 bg-white hover:bg-slate-100"
@@ -946,6 +1012,110 @@ export default function Admin() {
               </div>
             ) : tab === "gallery" ? (
               <AdminListingGalleryPanel busy={busy} setBusy={setBusy} setMessage={setSaveMessage} />
+            ) : tab === "units" ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-6">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-950">Apartment units</h2>
+                    <p className="mt-1 max-w-2xl text-sm text-slate-600">
+                      Mark units open or closed for new expressions of interest. The public form lists
+                      labels from this table; applicants still choose a preference, and your team
+                      confirms the final assignment outside this tool if needed.
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold hover:bg-slate-100 disabled:opacity-60"
+                      onClick={() => void loadConfig()}
+                    >
+                      Reload from Supabase
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !apartmentUnits.length}
+                      className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                      onClick={() => void saveApartmentUnits()}
+                    >
+                      {busy ? "Saving…" : "Save apartment units"}
+                    </button>
+                  </div>
+                </div>
+                {saveMessage ? (
+                  <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                    {saveMessage}
+                  </p>
+                ) : null}
+                {!apartmentUnits.length ? (
+                  <p className="mt-6 text-sm text-amber-900">
+                    No rows returned from <span className="font-mono text-xs">apartment_units</span>. Run
+                    the migration in <span className="font-mono text-xs">supabase/migrations/</span> or paste
+                    the apartment_units section from <span className="font-mono text-xs">schema.sql</span>,
+                    then reload.
+                  </p>
+                ) : (
+                  <div className="mt-6 space-y-4">
+                    {apartmentUnits.map((u) => (
+                      <div
+                        key={u.id}
+                        className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 md:grid md:grid-cols-[minmax(0,1fr)_auto] md:gap-4"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-lg bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                              id: {u.id}
+                            </span>
+                            <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-800">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 accent-slate-900"
+                                checked={u.available}
+                                disabled={busy}
+                                onChange={(e) =>
+                                  patchApartmentUnit(u.id, { available: e.target.checked })
+                                }
+                              />
+                              Open for new EOI
+                            </label>
+                          </div>
+                          <div>
+                            <label className="text-xs font-semibold text-slate-600">Label (public list)</label>
+                            <input
+                              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-300 focus:ring-2"
+                              value={u.label}
+                              disabled={busy}
+                              onChange={(e) => patchApartmentUnit(u.id, { label: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-semibold text-slate-600">Internal notes</label>
+                            <textarea
+                              className="mt-1 min-h-[72px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-300 focus:ring-2"
+                              value={u.notes ?? ""}
+                              disabled={busy}
+                              placeholder="Optional (admin only; not shown on the public site)"
+                              onChange={(e) => patchApartmentUnit(u.id, { notes: e.target.value || null })}
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-3 md:mt-0">
+                          <label className="text-xs font-semibold text-slate-600">Sort order</label>
+                          <input
+                            type="number"
+                            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-slate-300 focus:ring-2 md:w-28"
+                            value={u.sort_order}
+                            disabled={busy}
+                            onChange={(e) =>
+                              patchApartmentUnit(u.id, { sort_order: Math.floor(Number(e.target.value)) || 0 })
+                            }
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : tab === "pricing" ? (
               <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
                 <div className="rounded-2xl border border-slate-200 bg-white p-6">
@@ -1138,7 +1308,7 @@ export default function Admin() {
                           </div>
                           <div>
                             <span className="font-semibold">Preferred unit:</span>{" "}
-                            {selectedSubmission.preferred_unit}
+                            {formatPreferredUnitForDisplay(selectedSubmission.preferred_unit)}
                           </div>
                         </div>
                       </div>

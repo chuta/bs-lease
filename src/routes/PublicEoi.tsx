@@ -3,6 +3,7 @@ import { useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { estateAgents } from "../data/agents";
+import { APARTMENT_UNITS } from "../data/apartmentUnits";
 import { formatMoney, type LineItem, type Money } from "../data/lineItems";
 import { fetchPricingConfig } from "../lib/pricingConfig";
 import { ListingImageCarousel } from "../components/ListingImageCarousel";
@@ -192,6 +193,7 @@ export default function PublicEoi() {
     register,
     handleSubmit,
     setValue,
+    getValues,
     formState: { errors, isSubmitting },
     control,
   } = useForm<FormValues>({
@@ -241,6 +243,75 @@ export default function PublicEoi() {
   const [submitResult, setSubmitResult] = useState<
     { ok: true; referenceId: string } | { ok: false; message: string } | null
   >(null);
+
+  type UnitCatalogRow = { id: string; label: string; available: boolean };
+  const [unitCatalog, setUnitCatalog] = useState<UnitCatalogRow[]>([]);
+  const [availabilityLoadFailed, setAvailabilityLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/eoi-unit-availability")
+      .then(async (res) => {
+        const json = (await res.json().catch(() => null)) as null | {
+          ok?: boolean;
+          units?: unknown;
+        };
+        if (cancelled) return;
+        const raw = json?.units;
+        const rows: UnitCatalogRow[] = Array.isArray(raw)
+          ? (raw as unknown[]).flatMap((x) => {
+              if (!x || typeof x !== "object") return [];
+              const o = x as Record<string, unknown>;
+              const id = String(o.id ?? "").trim();
+              if (!id) return [];
+              return [
+                {
+                  id,
+                  label: String(o.label ?? "").trim() || `Unit ${id}`,
+                  available: Boolean(o.available),
+                },
+              ];
+            })
+          : [];
+        if (rows.length) {
+          setUnitCatalog(rows);
+          setAvailabilityLoadFailed(!res.ok || json?.ok === false);
+        } else {
+          setUnitCatalog([]);
+          setAvailabilityLoadFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAvailabilityLoadFailed(true);
+          setUnitCatalog([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const effectiveUnitCatalog = useMemo((): UnitCatalogRow[] => {
+    if (unitCatalog.length) return unitCatalog;
+    return APARTMENT_UNITS.map((u) => ({
+      id: u.id,
+      label: u.name,
+      available: true,
+    }));
+  }, [unitCatalog]);
+
+  const closedUnitSet = useMemo(
+    () => new Set(effectiveUnitCatalog.filter((u) => !u.available).map((u) => u.id)),
+    [effectiveUnitCatalog],
+  );
+
+  useEffect(() => {
+    const cur = getValues("preferredUnit");
+    if (cur !== "any" && closedUnitSet.has(cur)) {
+      setValue("preferredUnit", "any", { shouldValidate: true });
+    }
+  }, [closedUnitSet, getValues, setValue]);
 
   const watchedSelectedLineItemIds = useWatch({ control, name: "selectedLineItemIds" });
   const selectedLineItemIds = useMemo(
@@ -557,16 +628,33 @@ export default function PublicEoi() {
                   <label className="text-sm font-medium text-slate-700">Preferred unit *</label>
                   <select
                     className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-slate-300 focus:ring-2"
-                    {...register("preferredUnit")}
+                    {...register("preferredUnit", {
+                      validate: (v) =>
+                        v === "any" ||
+                        !closedUnitSet.has(v) ||
+                        'This unit is closed for new interest. Pick another unit or "Any available".',
+                    })}
                   >
-                    <option value="any">Any available</option>
-                    {Array.from({ length: 12 }, (_, i) => (
-                      <option key={i + 1} value={String(i + 1)}>
-                        Unit {i + 1}
+                    <option value="any">Any available (admin assigns the final unit)</option>
+                    {effectiveUnitCatalog.map((u) => (
+                      <option key={u.id} value={u.id} disabled={!u.available}>
+                        Unit {u.id} - {u.label}
+                        {u.available ? " — Open" : " — Closed"}
                       </option>
                     ))}
                   </select>
                   {fieldError(errors.preferredUnit?.message)}
+                  {availabilityLoadFailed ? (
+                    <p className="mt-2 text-xs text-amber-800">
+                      Using offline unit names; confirm availability with the property team if needed. The
+                      server still enforces closed units on submit.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">
+                      Open and closed states are set in Admin. Your choice is a preference; the lease team
+                      confirms the final apartment.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="text-sm font-medium text-slate-700">Move-in date</label>

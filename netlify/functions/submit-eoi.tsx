@@ -6,6 +6,7 @@ import { pdf } from "@react-pdf/renderer";
 import { EoiSubmissionPdf } from "../../src/pdf/EoiSubmissionPdf";
 import { createClient } from "@supabase/supabase-js";
 import { lineItems as canonicalLineItems } from "../../src/data/lineItems";
+import { formatPreferredUnitForDisplay, isApartmentUnitId } from "../../src/data/apartmentUnits";
 
 type UploadFile = {
   filename: string;
@@ -238,6 +239,51 @@ type DbLeaseDurationTierRow = {
   multiplier_bps: number;
 };
 
+async function apartmentUnitsInventoryCount(supabase: ReturnType<typeof createClient>): Promise<number> {
+  const { count, error } = await supabase.from("apartment_units").select("*", { count: "exact", head: true });
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** When apartment_units has rows, admin `available` flag gates EOI; otherwise legacy ids from code. */
+async function assertPreferredUnitAllowed(
+  supabase: ReturnType<typeof createClient>,
+  preferredUnit: string,
+  referenceId: string,
+  inventoryCountCached?: number,
+): Promise<{ statusCode: number; body: string } | null> {
+  if (preferredUnit === "any") return null;
+  const inventoryCount =
+    typeof inventoryCountCached === "number"
+      ? inventoryCountCached
+      : await apartmentUnitsInventoryCount(supabase);
+  if (inventoryCount === 0) {
+    if (!isApartmentUnitId(preferredUnit)) {
+      throw new Error("Invalid preferred unit selection.");
+    }
+    return null;
+  }
+  const { data: row, error } = await supabase
+    .from("apartment_units")
+    .select("id,label,available")
+    .eq("id", preferredUnit)
+    .maybeSingle();
+  if (error) throw error;
+  if (!row) throw new Error("Invalid preferred unit selection.");
+  if (!row.available) {
+    const display = row.label ? `Unit ${row.id} - ${row.label}` : `Unit ${row.id}`;
+    return {
+      statusCode: 409,
+      body: JSON.stringify({
+        ok: false,
+        referenceId,
+        message: `${display} is not open for new expressions of interest. Choose another unit or "Any available" (admin assigns the final unit).`,
+      }),
+    };
+  }
+  return null;
+}
+
 function scaleKoboFrom12MonthPrice(amount12_kobo: number, months: number, multiplierBps: number): number {
   const amount12 = Number(amount12_kobo ?? 0);
   const m = Math.floor(Number(months ?? 0));
@@ -356,6 +402,22 @@ export const handler: Handler = async (event) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     log(referenceId, "supabase:client_ready");
+
+    const apartmentInventoryCount = await apartmentUnitsInventoryCount(supabase);
+    const unitBlockEarly = await assertPreferredUnitAllowed(
+      supabase,
+      data.preferredUnit,
+      referenceId,
+      apartmentInventoryCount,
+    );
+    if (unitBlockEarly) {
+      log(referenceId, "preferred_unit:blocked_inventory", { preferredUnit: data.preferredUnit });
+      return {
+        statusCode: unitBlockEarly.statusCode,
+        headers: { "content-type": "application/json" },
+        body: unitBlockEarly.body,
+      };
+    }
 
     // Prevent duplicate submissions: at most one submission per email in a rolling window.
     // This check runs early to avoid PDF generation + storage uploads for duplicates.
@@ -518,6 +580,23 @@ export const handler: Handler = async (event) => {
       price_kobo: x.price_kobo,
     }));
 
+    const unitBlockLate = await assertPreferredUnitAllowed(
+      supabase,
+      data.preferredUnit,
+      referenceId,
+      apartmentInventoryCount,
+    );
+    if (unitBlockLate) {
+      log(referenceId, "preferred_unit:blocked_inventory:precheck_insert", {
+        preferredUnit: data.preferredUnit,
+      });
+      return {
+        statusCode: unitBlockLate.statusCode,
+        headers: { "content-type": "application/json" },
+        body: unitBlockLate.body,
+      };
+    }
+
     log(referenceId, "db:insert_submission:begin");
     const { error: insErr } = await supabase.from("eoi_submissions").insert({
       reference_id: referenceId,
@@ -598,9 +677,7 @@ export const handler: Handler = async (event) => {
       <p><b>State of origin</b>: ${data.stateOfOrigin}</p>
       <p><b>WhatsApp</b>: ${data.whatsappNumber || "—"}</p>
       <p><b>Email</b>: ${data.email}</p>
-      <p><b>Preferred unit</b>: ${
-        data.preferredUnit === "any" ? "Any available" : `Unit ${data.preferredUnit}`
-      }</p>
+      <p><b>Preferred unit</b>: ${formatPreferredUnitForDisplay(data.preferredUnit)}</p>
       <p><b>Lease duration</b>: ${data.leaseDurationMonths} months</p>
       <p><b>Estate agent</b>: ${data.estateAgent}</p>
       <p><b>Selected line items</b>: ${

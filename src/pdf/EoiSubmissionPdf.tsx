@@ -1,5 +1,6 @@
 import React from "react";
 import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { formatPreferredUnitForDisplay } from "../data/apartmentUnits";
 
 // Ensures React is in scope for Netlify server bundles that still expect classic JSX runtime.
 void React;
@@ -141,9 +142,7 @@ export function EoiSubmissionPdf({
           <Text style={styles.h}>Apartment Preference</Text>
           <View style={styles.row}>
             <Text style={styles.label}>Preferred unit</Text>
-            <Text style={styles.value}>
-              {data.preferredUnit === "any" ? "Any available" : `Unit ${data.preferredUnit}`}
-            </Text>
+            <Text style={styles.value}>{formatPreferredUnitForDisplay(data.preferredUnit)}</Text>
           </View>
           <View style={styles.row}>
             <Text style={styles.label}>Move-in date</Text>
